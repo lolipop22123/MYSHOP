@@ -156,3 +156,19 @@ CREATE TABLE IF NOT EXISTS crypto_pay_invoices (
     paid_at TIMESTAMP WITH TIME ZONE,
     expires_at TIMESTAMP WITH TIME ZONE
 ); 
+
+-- Shop Settings table
+CREATE TABLE IF NOT EXISTS shop_settings (
+    id SERIAL PRIMARY KEY,
+    key VARCHAR(100) UNIQUE NOT NULL,
+    value TEXT NOT NULL,
+    description TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Insert default shop settings
+INSERT INTO shop_settings (key, value, description) VALUES 
+    ('shop_open', 'true', 'Whether the shop is open for sales'),
+    ('maintenance_message', 'Магазин временно закрыт на техническое обслуживание', 'Message shown when shop is closed')
+ON CONFLICT (key) DO NOTHING; 

@@ -84,6 +84,18 @@ class UserRepository:
                 ORDER BY created_at DESC
             """)
             return [User(**dict(row)) for row in rows]
+    
+    async def delete_user(self, user_id: int) -> bool:
+        """Delete user by ID (cascade delete due to foreign keys)"""
+        try:
+            pool = await self.db_manager.get_pool()
+            async with pool.acquire() as conn:
+                # Delete user (cascade will handle related records)
+                await conn.execute("DELETE FROM users WHERE id = $1", user_id)
+                return True
+        except Exception as e:
+            logger.error(f"Error deleting user {user_id}: {e}")
+            return False
 
 
 class ChatRepository:
@@ -560,71 +572,101 @@ class PremiumPricingRepository:
 class UserBalanceRepository:
     """Repository for user balance management"""
     
-    def __init__(self, connection):
-        self.connection = connection
+    def __init__(self, database_url: str):
+        self.database_url = database_url
+        self.connection = None
     
-    async def get_user_balance(self, user_id: int) -> Optional[UserBalance]:
-        """Get user balance by user_id"""
+    async def connect(self):
+        """Connect to database"""
+        if not self.connection:
+            self.connection = await asyncpg.connect(self.database_url)
+    
+    async def close(self):
+        """Close database connection"""
+        if self.connection:
+            await self.connection.close()
+            self.connection = None
+    
+    async def get_user_balance(self, user_id: int) -> dict:
+        """Get user balance"""
         try:
+            await self.connect()
             row = await self.connection.fetchrow("""
-                SELECT id, user_id, balance_usd, balance_usdt, created_at, updated_at
+                SELECT balance_usd, balance_usdt 
                 FROM user_balance 
                 WHERE user_id = $1
-            """, user_id)
+            """, int(user_id))
             
             if row:
-                return UserBalance(
-                    id=row[0],
-                    user_id=row[1],
-                    balance_usd=float(row[2]),
-                    balance_usdt=float(row[3]),
-                    created_at=row[4],
-                    updated_at=row[5]
-                )
-            return None
+                return {
+                    'balance_usd': float(row[0]),
+                    'balance_usdt': float(row[1])
+                }
+            else:
+                # Create balance record if doesn't exist
+                await self.connection.execute("""
+                    INSERT INTO user_balance (user_id, balance_usd, balance_usdt)
+                    VALUES ($1, 0.00, 0.00)
+                """, int(user_id))
+                return {'balance_usd': 0.00, 'balance_usdt': 0.00}
         except Exception as e:
             logger.error(f"Error getting user balance: {e}")
-            return None
+            return {'balance_usd': 0.00, 'balance_usdt': 0.00}
     
-    async def create_user_balance(self, user_id: int) -> bool:
-        """Create user balance record"""
-        try:
-            await self.connection.execute("""
-                INSERT INTO user_balance (user_id, balance_usd, balance_usdt)
-                VALUES ($1, 0.00, 0.00)
-                ON CONFLICT (user_id) DO NOTHING
-            """, user_id)
-            return True
-        except Exception as e:
-            logger.error(f"Error creating user balance: {e}")
-            return False
-    
-    async def update_balance(self, user_id: int, balance_usd: float, balance_usdt: float) -> bool:
+    async def update_user_balance(self, user_id: int, balance_usd: float = None, balance_usdt: float = None) -> bool:
         """Update user balance"""
         try:
-            await self.connection.execute("""
-                UPDATE user_balance 
-                SET balance_usd = $1, balance_usdt = $2, updated_at = NOW()
-                WHERE user_id = $1
-            """, balance_usd, balance_usdt, user_id)
+            await self.connect()
+            
+            if balance_usd is not None and balance_usdt is not None:
+                await self.connection.execute("""
+                    INSERT INTO user_balance (user_id, balance_usd, balance_usdt, updated_at)
+                    VALUES ($1, $2, $3, NOW())
+                    ON CONFLICT (user_id) 
+                    DO UPDATE SET balance_usd = $2, balance_usdt = $3, updated_at = NOW()
+                """, int(user_id), float(balance_usd), float(balance_usdt))
+            elif balance_usd is not None:
+                await self.connection.execute("""
+                    INSERT INTO user_balance (user_id, balance_usd, updated_at)
+                    VALUES ($1, $2, NOW())
+                    ON CONFLICT (user_id) 
+                    DO UPDATE SET balance_usd = $2, updated_at = NOW()
+                """, int(user_id), float(balance_usd))
+            elif balance_usdt is not None:
+                await self.connection.execute("""
+                    INSERT INTO user_balance (user_id, balance_usdt, updated_at)
+                    VALUES ($1, $2, NOW())
+                    ON CONFLICT (user_id) 
+                    DO UPDATE SET balance_usdt = $2, updated_at = NOW()
+                """, int(user_id), float(balance_usdt))
+            
             return True
         except Exception as e:
             logger.error(f"Error updating user balance: {e}")
             return False
     
-    async def add_to_balance(self, user_id: int, amount_usd: float, amount_usdt: float) -> bool:
+    async def add_to_balance(self, user_id: int, amount_usd: float = 0, amount_usdt: float = 0) -> bool:
         """Add amount to user balance"""
         try:
-            await self.connection.execute("""
-                UPDATE user_balance 
-                SET balance_usd = balance_usd + $1, 
-                    balance_usdt = balance_usdt + $2, 
-                    updated_at = NOW()
-                WHERE user_id = $3
-            """, amount_usd, amount_usdt, user_id)
-            return True
+            current_balance = await self.get_user_balance(user_id)
+            new_balance_usd = current_balance['balance_usd'] + amount_usd
+            new_balance_usdt = current_balance['balance_usdt'] + amount_usdt
+            
+            return await self.update_user_balance(user_id, new_balance_usd, new_balance_usdt)
         except Exception as e:
-            logger.error(f"Error adding to user balance: {e}")
+            logger.error(f"Error adding to balance: {e}")
+            return False
+    
+    async def subtract_from_balance(self, user_id: int, amount_usd: float = 0, amount_usdt: float = 0) -> bool:
+        """Subtract amount from user balance"""
+        try:
+            current_balance = await self.get_user_balance(user_id)
+            new_balance_usd = max(0, current_balance['balance_usd'] - amount_usd)
+            new_balance_usdt = max(0, current_balance['balance_usdt'] - amount_usdt)
+            
+            return await self.update_user_balance(user_id, new_balance_usd, new_balance_usdt)
+        except Exception as e:
+            logger.error(f"Error subtracting from balance: {e}")
             return False
 
 
@@ -767,3 +809,60 @@ class CryptoPayInvoiceRepository:
         except Exception as e:
             logger.error(f"Error getting pending invoices: {e}")
             return [] 
+
+
+class ShopSettingsRepository:
+    """Repository for shop settings"""
+    
+    def __init__(self, database_url: str):
+        self.database_url = database_url
+        self.connection = None
+    
+    async def connect(self):
+        """Connect to database"""
+        if not self.connection:
+            self.connection = await asyncpg.connect(self.database_url)
+    
+    async def close(self):
+        """Close database connection"""
+        if self.connection:
+            await self.connection.close()
+            self.connection = None
+    
+    async def get_setting(self, key: str) -> str:
+        """Get setting value by key"""
+        try:
+            await self.connect()
+            row = await self.connection.fetchrow(
+                "SELECT value FROM shop_settings WHERE key = $1",
+                str(key)
+            )
+            return row[0] if row else None
+        except Exception as e:
+            logger.error(f"Error getting setting {key}: {e}")
+            return None
+    
+    async def set_setting(self, key: str, value: str, description: str = None) -> bool:
+        """Set setting value"""
+        try:
+            await self.connect()
+            await self.connection.execute("""
+                INSERT INTO shop_settings (key, value, description, updated_at) 
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (key) 
+                DO UPDATE SET value = $2, description = $3, updated_at = NOW()
+            """, str(key), str(value), description)
+            return True
+        except Exception as e:
+            logger.error(f"Error setting setting {key}: {e}")
+            return False
+    
+    async def is_shop_open(self) -> bool:
+        """Check if shop is open"""
+        setting = await self.get_setting('shop_open')
+        return setting == 'true' if setting else True
+    
+    async def get_maintenance_message(self) -> str:
+        """Get maintenance message"""
+        setting = await self.get_setting('maintenance_message')
+        return setting if setting else 'Магазин временно закрыт на техническое обслуживание' 

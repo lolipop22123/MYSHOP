@@ -61,6 +61,15 @@ class AdminStates(StatesGroup):
     # Premium pricing states
     waiting_for_premium_months = State()
     waiting_for_premium_price_usd = State()
+    
+    # User management states
+    waiting_for_user_id = State()
+    waiting_for_balance_amount = State()
+    waiting_for_balance_operation = State()  # 'add' or 'subtract'
+    
+    # Shop settings states
+    waiting_for_shop_status = State()
+    waiting_for_maintenance_message = State()
 
 
 def is_admin(user_id: int, config: Config) -> bool:
@@ -95,6 +104,12 @@ async def cmd_admin(message: Message):
         ],
         [
             InlineKeyboardButton(text="💎 Premium Цены", callback_data="admin_premium_pricing")
+        ],
+        [
+            InlineKeyboardButton(text="👥 Управление пользователями", callback_data="admin_users")
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ Настройки магазина", callback_data="admin_shop_settings")
         ],
         [
             InlineKeyboardButton(text=get_text("btn_admin_bot_status", "ru"), callback_data="admin_bot_status")
@@ -268,6 +283,12 @@ async def admin_panel_callback(callback: CallbackQuery):
         ],
         [
             InlineKeyboardButton(text="💎 Premium Цены", callback_data="admin_premium_pricing")
+        ],
+        [
+            InlineKeyboardButton(text="👥 Управление пользователями", callback_data="admin_users")
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ Настройки магазина", callback_data="admin_shop_settings")
         ],
         [
             InlineKeyboardButton(text=get_text("btn_admin_bot_status", "ru"), callback_data="admin_bot_status")
@@ -1006,6 +1027,494 @@ async def handle_premium_price_usd(message: Message, state: FSMContext):
         
     except ValueError:
         await message.answer("❌ Неверный формат цены. Введите число (например: 15.99):")
+
+
+# User Management Handlers
+@router.callback_query(F.data == "admin_users")
+async def admin_users_callback(callback: CallbackQuery):
+    """Handle admin users management"""
+    config = Config()
+    
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer(get_text("access_denied", "ru"))
+        return
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔍 Найти пользователя по ID", callback_data="admin_find_user")
+        ],
+        [
+            InlineKeyboardButton(text="💰 Управление балансом", callback_data="admin_manage_balance")
+        ],
+        [
+            InlineKeyboardButton(text="🗑️ Удалить пользователя", callback_data="admin_delete_user")
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="admin")
+        ]
+    ])
+    
+    await callback.message.edit_text(
+        "👥 <b>Управление пользователями</b>\n\n"
+        "Выберите действие:",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "admin_find_user")
+async def admin_find_user_callback(callback: CallbackQuery, state: FSMContext):
+    """Handle find user by ID"""
+    config = Config()
+    
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer(get_text("access_denied", "ru"))
+        return
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="❌ Отмена", callback_data="admin_users")
+        ]
+    ])
+    
+    await callback.message.edit_text(
+        "🔍 <b>Поиск пользователя</b>\n\n"
+        "Введите Telegram ID пользователя:",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(AdminStates.waiting_for_user_id)
+
+
+@router.message(AdminStates.waiting_for_user_id)
+async def handle_user_id_input(message: Message, state: FSMContext):
+    """Handle user ID input"""
+    config = Config()
+    
+    if not is_admin(message.from_user.id, config):
+        await message.answer(get_text("access_denied", "ru"))
+        await state.clear()
+        return
+    
+    try:
+        user_id = int(message.text)
+        
+        # Get user info
+        user_repo = UserRepository(config.database_url)
+        user = await user_repo.get_user_by_telegram_id(user_id)
+        
+        if not user:
+            await message.answer("❌ Пользователь с таким ID не найден")
+            await state.clear()
+            return
+        
+        # Check if this is a delete operation
+        data = await state.get_data()
+        if data.get('operation') == 'delete':
+            # Delete user
+            success = await user_repo.delete_user(user.id)
+            
+            if success:
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="✅ Продолжить", callback_data="admin_users")
+                    ]
+                ])
+                
+                await message.answer(
+                    f"✅ <b>Пользователь успешно удален!</b>\n\n"
+                    f"👤 <b>Имя:</b> {user.first_name or 'Не указано'}\n"
+                    f"📱 <b>Telegram ID:</b> {user.telegram_id}\n"
+                    f"🆔 <b>ID в БД:</b> {user.id}\n\n"
+                    f"Все данные пользователя удалены из базы данных.",
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+            else:
+                await message.answer("❌ Ошибка при удалении пользователя. Попробуйте снова.")
+            
+            await state.clear()
+            return
+        
+        # Get user balance
+        from bot.database import UserBalanceRepository
+        balance_repo = UserBalanceRepository(config.database_url)
+        balance = await balance_repo.get_user_balance(user.id)
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💰 Пополнить баланс", callback_data=f"admin_add_balance_{user.id}"),
+                InlineKeyboardButton(text="💸 Снять с баланса", callback_data=f"admin_subtract_balance_{user.id}")
+            ],
+            [
+                InlineKeyboardButton(text="🗑️ Удалить пользователя", callback_data=f"admin_confirm_delete_{user.id}")
+            ],
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_users")
+            ]
+        ])
+        
+        await message.answer(
+            f"👤 <b>Информация о пользователе</b>\n\n"
+            f"🆔 <b>ID:</b> {user.id}\n"
+            f"📱 <b>Telegram ID:</b> {user.telegram_id}\n"
+            f"👤 <b>Имя:</b> {user.first_name or 'Не указано'}\n"
+            f"📛 <b>Фамилия:</b> {user.last_name or 'Не указано'}\n"
+            f"🌐 <b>Язык:</b> {user.language}\n"
+            f"📅 <b>Дата регистрации:</b> {user.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+            f"✅ <b>Активен:</b> {'Да' if user.is_active else 'Нет'}\n\n"
+            f"💰 <b>Баланс USD:</b> ${balance['balance_usd']:.2f}\n"
+            f"💎 <b>Баланс USDT:</b> {balance['balance_usdt']:.8f}",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        
+        await state.clear()
+        
+    except ValueError:
+        await message.answer("❌ Неверный формат ID. Введите число:")
+
+
+@router.callback_query(F.data.startswith("admin_confirm_delete_"))
+async def admin_confirm_delete_callback(callback: CallbackQuery, state: FSMContext):
+    """Handle confirm delete user"""
+    config = Config()
+    
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer(get_text("access_denied", "ru"))
+        return
+    
+    user_id = int(callback.data.split("_")[-1])
+    
+    # Store user_id and operation in state
+    await state.update_data(user_id=user_id, operation="delete")
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, удалить", callback_data="admin_proceed_delete"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="admin_users")
+        ]
+    ])
+    
+    await callback.message.edit_text(
+        "🗑️ <b>Подтверждение удаления</b>\n\n"
+        "⚠️ <b>ВНИМАНИЕ!</b> Это действие необратимо!\n"
+        "Все данные пользователя будут удалены из базы данных.\n\n"
+        "Вы уверены, что хотите удалить этого пользователя?",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "admin_proceed_delete")
+async def admin_proceed_delete_callback(callback: CallbackQuery, state: FSMContext):
+    """Handle proceed with delete user"""
+    config = Config()
+    
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer(get_text("access_denied", "ru"))
+        return
+    
+    # Get stored data
+    data = await state.get_data()
+    user_id = data.get('user_id')
+    
+    if not user_id:
+        await callback.answer("❌ Ошибка: данные не найдены")
+        await state.clear()
+        return
+    
+    # Delete user
+    user_repo = UserRepository(config.database_url)
+    success = await user_repo.delete_user(user_id)
+    
+    if success:
+        await callback.answer("✅ Пользователь успешно удален!")
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Продолжить", callback_data="admin_users")
+            ]
+        ])
+        
+        await callback.message.edit_text(
+            "✅ <b>Пользователь успешно удален!</b>\n\n"
+            f"🆔 <b>ID в БД:</b> {user_id}\n\n"
+            "Все данные пользователя удалены из базы данных.",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    else:
+        await callback.answer("❌ Ошибка при удалении пользователя")
+    
+    await state.clear()
+
+
+# User Management Handlers
+@router.callback_query(F.data.startswith("admin_add_balance_"))
+async def admin_add_balance_callback(callback: CallbackQuery, state: FSMContext):
+    """Handle add balance operation"""
+    config = Config()
+    
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer(get_text("access_denied", "ru"))
+        return
+    
+    user_id = int(callback.data.split("_")[-1])
+    
+    # Store user_id and operation in state
+    await state.update_data(user_id=user_id, operation="add")
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="❌ Отмена", callback_data="admin_users")
+        ]
+    ])
+    
+    await callback.message.edit_text(
+        "💰 <b>Пополнение баланса</b>\n\n"
+        "Введите сумму для пополнения в USD (например: 10.50):",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(AdminStates.waiting_for_balance_amount)
+
+
+@router.callback_query(F.data.startswith("admin_subtract_balance_"))
+async def admin_subtract_balance_callback(callback: CallbackQuery, state: FSMContext):
+    """Handle subtract balance operation"""
+    config = Config()
+    
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer(get_text("access_denied", "ru"))
+        return
+    
+    user_id = int(callback.data.split("_")[-1])
+    
+    # Store user_id and operation in state
+    await state.update_data(user_id=user_id, operation="subtract")
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="❌ Отмена", callback_data="admin_users")
+        ]
+    ])
+    
+    await callback.message.edit_text(
+        "💸 <b>Снятие с баланса</b>\n\n"
+        "Введите сумму для снятия в USD (например: 5.25):",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(AdminStates.waiting_for_balance_amount)
+
+
+@router.message(AdminStates.waiting_for_balance_amount)
+async def handle_balance_amount(message: Message, state: FSMContext):
+    """Handle balance amount input"""
+    config = Config()
+    
+    if not is_admin(message.from_user.id, config):
+        await message.answer(get_text("access_denied", "ru"))
+        await state.clear()
+        return
+    
+    try:
+        amount = float(message.text.replace(',', '.'))
+        if amount <= 0:
+            await message.answer("❌ Сумма должна быть больше 0. Попробуйте снова:")
+            return
+        
+        # Get stored data
+        data = await state.get_data()
+        user_id = data.get('user_id')
+        operation = data.get('operation')
+        
+        if not user_id or not operation:
+            await message.answer("❌ Ошибка: данные не найдены")
+            await state.clear()
+            return
+        
+        # Update balance
+        from bot.database import UserBalanceRepository
+        balance_repo = UserBalanceRepository(config.database_url)
+        
+        if operation == "add":
+            success = await balance_repo.add_to_balance(user_id, amount_usd=amount)
+            operation_text = "пополнен"
+        else:
+            success = await balance_repo.subtract_from_balance(user_id, amount_usd=amount)
+            operation_text = "уменьшен"
+        
+        if success:
+            # Get updated balance
+            new_balance = await balance_repo.get_user_balance(user_id)
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Продолжить", callback_data="admin_users")
+                ]
+            ])
+            
+            await message.answer(
+                f"✅ <b>Баланс успешно {operation_text}!</b>\n\n"
+                f"💰 <b>Сумма:</b> ${amount:.2f}\n"
+                f"💵 <b>Новый баланс USD:</b> ${new_balance['balance_usd']:.2f}\n\n"
+                f"Операция выполнена успешно.",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        else:
+            await message.answer("❌ Ошибка при изменении баланса. Попробуйте снова.")
+        
+        await state.clear()
+        
+    except ValueError:
+        await message.answer("❌ Неверный формат суммы. Введите число (например: 10.50):")
+
+
+# Shop Settings Handlers
+@router.callback_query(F.data == "admin_shop_settings")
+async def admin_shop_settings_callback(callback: CallbackQuery):
+    """Handle admin shop settings"""
+    config = Config()
+    
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer(get_text("access_denied", "ru"))
+        return
+    
+    # Get current shop status
+    from bot.database import ShopSettingsRepository
+    shop_repo = ShopSettingsRepository(config.database_url)
+    is_open = await shop_repo.is_shop_open()
+    maintenance_message = await shop_repo.get_maintenance_message()
+    
+    status_text = "🟢 Открыт" if is_open else "🔴 Закрыт"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="🔴 Закрыть магазин" if is_open else "🟢 Открыть магазин",
+                callback_data="admin_toggle_shop"
+            )
+        ],
+        [
+            InlineKeyboardButton(text="📝 Изменить сообщение", callback_data="admin_edit_maintenance_message")
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="admin")
+        ]
+    ])
+    
+    await callback.message.edit_text(
+        "⚙️ <b>Настройки магазина</b>\n\n"
+        f"🛍️ <b>Статус:</b> {status_text}\n"
+        f"📝 <b>Сообщение при закрытии:</b>\n{maintenance_message}\n\n"
+        "Выберите действие:",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "admin_toggle_shop")
+async def admin_toggle_shop_callback(callback: CallbackQuery):
+    """Handle toggle shop status"""
+    config = Config()
+    
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer(get_text("access_denied", "ru"))
+        return
+    
+    # Toggle shop status
+    from bot.database import ShopSettingsRepository
+    shop_repo = ShopSettingsRepository(config.database_url)
+    
+    current_status = await shop_repo.is_shop_open()
+    new_status = not current_status
+    
+    success = await shop_repo.set_setting('shop_open', str(new_status).lower())
+    
+    if success:
+        status_text = "🟢 Открыт" if new_status else "🔴 Закрыт"
+        action_text = "открыт" if new_status else "закрыт"
+        
+        await callback.answer(f"✅ Магазин {action_text}!")
+        
+        # Refresh the settings view
+        await admin_shop_settings_callback(callback)
+    else:
+        await callback.answer("❌ Ошибка при изменении статуса")
+
+
+@router.callback_query(F.data == "admin_edit_maintenance_message")
+async def admin_edit_maintenance_message_callback(callback: CallbackQuery, state: FSMContext):
+    """Handle edit maintenance message"""
+    config = Config()
+    
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer(get_text("access_denied", "ru"))
+        return
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="❌ Отмена", callback_data="admin_shop_settings")
+        ]
+    ])
+    
+    await callback.message.edit_text(
+        "📝 <b>Изменение сообщения при закрытии</b>\n\n"
+        "Введите новое сообщение, которое будет показываться пользователям "
+        "когда магазин закрыт:",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(AdminStates.waiting_for_maintenance_message)
+
+
+@router.message(AdminStates.waiting_for_maintenance_message)
+async def handle_maintenance_message(message: Message, state: FSMContext):
+    """Handle maintenance message input"""
+    config = Config()
+    
+    if not is_admin(message.from_user.id, config):
+        await message.answer(get_text("access_denied", "ru"))
+        await state.clear()
+        return
+    
+    new_message = message.text.strip()
+    
+    if not new_message:
+        await message.answer("❌ Сообщение не может быть пустым. Попробуйте снова:")
+        return
+    
+    # Update maintenance message
+    from bot.database import ShopSettingsRepository
+    shop_repo = ShopSettingsRepository(config.database_url)
+    
+    success = await shop_repo.set_setting('maintenance_message', new_message)
+    
+    if success:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Продолжить", callback_data="admin_shop_settings")
+            ]
+        ])
+        
+        await message.answer(
+            f"✅ <b>Сообщение обновлено!</b>\n\n"
+            f"📝 <b>Новое сообщение:</b>\n{new_message}\n\n"
+            f"Сообщение успешно сохранено.",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer("❌ Ошибка при сохранении сообщения. Попробуйте снова.")
+    
+    await state.clear()
 
 
 def register_admin_handlers(dp: Dispatcher):

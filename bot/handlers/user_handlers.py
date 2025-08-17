@@ -5,7 +5,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from bot.database import UserRepository, ChatRepository, MessageRepository, CategoryRepository, SubcategoryRepository, ProductRepository, OrderRepository
+from bot.database import UserRepository, ChatRepository, MessageRepository, CategoryRepository, SubcategoryRepository, ProductRepository, OrderRepository, ShopSettingsRepository
 from bot.config import Config
 from bot.locales.translations import get_text
 
@@ -579,6 +579,25 @@ async def shop_callback(callback: CallbackQuery):
     config = Config()
     user_repo = UserRepository(config.database_url)
     category_repo = CategoryRepository(config.database_url)
+    
+    # Check if shop is open
+    shop_repo = ShopSettingsRepository(config.database_url)
+    is_shop_open = await shop_repo.is_shop_open()
+    
+    if not is_shop_open:
+        maintenance_message = await shop_repo.get_maintenance_message()
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")
+            ]
+        ])
+        
+        await callback.message.edit_text(
+            f"🔴 <b>Магазин временно закрыт</b>\n\n{maintenance_message}",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return
     
     user = await user_repo.get_user_by_telegram_id(callback.from_user.id)
     if not user:
@@ -1322,6 +1341,25 @@ async def buy_now_callback(callback: CallbackQuery):
     config = Config()
     user_repo = UserRepository(config.database_url)
     
+    # Check if shop is open
+    shop_repo = ShopSettingsRepository(config.database_url)
+    is_shop_open = await shop_repo.is_shop_open()
+    
+    if not is_shop_open:
+        maintenance_message = await shop_repo.get_maintenance_message()
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")
+            ]
+        ])
+        
+        await callback.message.edit_text(
+            f"🔴 <b>Магазин временно закрыт</b>\n\n{maintenance_message}",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return
+    
     user = await user_repo.get_user_by_telegram_id(callback.from_user.id)
     if not user:
         await callback.answer("Ошибка: пользователь не найден")
@@ -1348,6 +1386,25 @@ async def pay_callback(callback: CallbackQuery):
     user_repo = UserRepository(config.database_url)
     order_repo = OrderRepository(config.database_url)
     product_repo = ProductRepository(config.database_url)
+    
+    # Check if shop is open
+    shop_repo = ShopSettingsRepository(config.database_url)
+    is_shop_open = await shop_repo.is_shop_open()
+    
+    if not is_shop_open:
+        maintenance_message = await shop_repo.get_maintenance_message()
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")
+            ]
+        ])
+        
+        await callback.message.edit_text(
+            f"🔴 <b>Магазин временно закрыт</b>\n\n{maintenance_message}",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return
     
     user = await user_repo.get_user_by_telegram_id(callback.from_user.id)
     if not user:

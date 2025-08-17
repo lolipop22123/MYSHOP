@@ -1,5 +1,5 @@
 from .connection import get_db_manager, DatabaseManager
-from .repository import UserRepository, ChatRepository, MessageRepository, CategoryRepository, SubcategoryRepository, ProductRepository, OrderRepository
+from .repository import UserRepository, ChatRepository, MessageRepository, CategoryRepository, SubcategoryRepository, ProductRepository, OrderRepository, ShopSettingsRepository, UserBalanceRepository
 from .models import User, Chat, Message, Category, Subcategory, Product, Order
 
 async def create_tables():
@@ -31,6 +31,8 @@ __all__ = [
     'SubcategoryRepository',
     'ProductRepository',
     'OrderRepository',
+    'ShopSettingsRepository',
+    'UserBalanceRepository',
     'User',
     'Chat', 
     'Message',
