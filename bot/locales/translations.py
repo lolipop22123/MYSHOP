@@ -14,7 +14,7 @@ TRANSLATIONS = {
         "category_services": "🔧 Услуги",
         
         # Profile
-        "profile_title": "👤 <b>Ваш профиль</b> 👤\n\n🆔 <b>ID:</b> {telegram_id}\n👤 <b>Имя:</b> {first_name}\n📝 <b>Фамилия:</b> {last_name}\n🔗 <b>Username:</b> @{username}\n📅 <b>Дата регистрации:</b> {created_at}\n✅ <b>Статус:</b> {status}\n\n💰 <b>Баланс:</b> {balance} $\n📦 <b>Заказов:</b> {orders}\n⭐ <b>Рейтинг:</b> {rating}",
+        "profile_title": "👤 <b>Ваш профиль</b> 👤\n\n🆔 <b>ID:</b> {telegram_id}\n👤 <b>Имя:</b> {first_name}\n📝 <b>Фамилия:</b> {last_name}\n🔗 <b>Username:</b> @{username}\n📅 <b>Дата регистрации:</b> {created_at}\n✅ <b>Статус:</b> {status}\n\n💰 <b>Баланс:</b> {balance}\n📦 <b>Заказов:</b> {orders}\n⭐ <b>Рейтинг:</b> {rating}",
         "profile_not_found": "❌ Профиль не найден. Попробуйте /start",
         
         # Orders
@@ -61,6 +61,7 @@ TRANSLATIONS = {
         "btn_checkout": "💳 Оформить заказ",
         "btn_clear_cart": "🗑️ Очистить корзину",
         "btn_fragment_premium": "⭐ Telegram Premium",
+        "btn_fragment_stars": "⭐ Telegram Stars",
         
         # Admin buttons
         "btn_admin_panel": "🔧 Админ панель",
@@ -93,6 +94,13 @@ TRANSLATIONS = {
         "fragment_order_cancelled": "❌ Заказ отменен",
         "fragment_order_completed": "✅ Заказ выполнен! Premium активирован.",
         
+        # Fragment Stars
+        "fragment_stars_title": "⭐ Telegram Stars",
+        "fragment_stars_description": "Покупка Telegram Stars через Fragment",
+        "fragment_select_stars": "⭐ <b>Выберите количество Stars</b> ⭐\n\nВыберите количество Stars для покупки:",
+        "fragment_stars_order_created": "✅ Заказ на Stars создан! Ожидайте подтверждения.",
+        "fragment_stars_order_completed": "✅ Заказ выполнен! Stars отправлены.",
+        
         # Messages
         "access_denied": "❌ У вас нет прав для выполнения этой команды",
         "unknown_message": "🌟 <b>CosmicPerks</b> 🌟\n\nИспользуйте кнопки ниже для навигации по магазину:",
@@ -111,7 +119,7 @@ TRANSLATIONS = {
         "category_services": "🔧 Services",
         
         # Profile
-        "profile_title": "👤 <b>Your Profile</b> 👤\n\n🆔 <b>ID:</b> {telegram_id}\n👤 <b>Name:</b> {first_name}\n📝 <b>Last Name:</b> {last_name}\n🔗 <b>Username:</b> @{username}\n📅 <b>Registration Date:</b> {created_at}\n✅ <b>Status:</b> {status}\n\n💰 <b>Balance:</b> {balance} $\n📦 <b>Orders:</b> {orders}\n⭐ <b>Rating:</b> {rating}",
+        "profile_title": "👤 <b>Your Profile</b> 👤\n\n🆔 <b>ID:</b> {telegram_id}\n👤 <b>Name:</b> {first_name}\n📝 <b>Last Name:</b> {last_name}\n🔗 <b>Username:</b> @{username}\n📅 <b>Registration Date:</b> {created_at}\n✅ <b>Status:</b> {status}\n\n💰 <b>Balance:</b> {balance}\n📦 <b>Orders:</b> {orders}\n⭐ <b>Rating:</b> {rating}",
         "profile_not_found": "❌ Profile not found. Try /start",
         
         # Orders
@@ -158,6 +166,7 @@ TRANSLATIONS = {
         "btn_checkout": "💳 Checkout",
         "btn_clear_cart": "🗑️ Clear Cart",
         "btn_fragment_premium": "⭐ Telegram Premium",
+        "btn_fragment_stars": "⭐ Telegram Stars",
         
         # Admin buttons
         "btn_admin_panel": "🔧 Admin Panel",
@@ -189,6 +198,13 @@ TRANSLATIONS = {
         "fragment_invalid_username": "❌ Invalid username. Try again.",
         "fragment_order_cancelled": "❌ Order cancelled",
         "fragment_order_completed": "✅ Order completed! Premium activated.",
+        
+        # Fragment Stars
+        "fragment_stars_title": "⭐ Telegram Stars",
+        "fragment_stars_description": "Buy Telegram Stars through Fragment",
+        "fragment_select_stars": "⭐ <b>Select Stars quantity</b> ⭐\n\nChoose the number of Stars to purchase:",
+        "fragment_stars_order_created": "✅ Stars order created! Wait for confirmation.",
+        "fragment_stars_order_completed": "✅ Order completed! Stars sent.",
         
         # Messages
         "access_denied": "❌ You don't have permission to execute this command",

@@ -119,6 +119,17 @@ class PremiumPricing:
 
 
 @dataclass
+class StarsPricing:
+    """Telegram Stars pricing model"""
+    id: int
+    stars_count: int  # 50, 100, 200, 500 stars
+    price_usd: float
+    is_active: bool = True
+    created_at: datetime = None
+    updated_at: datetime = None
+
+
+@dataclass
 class UserBalance:
     """User balance model"""
     id: int

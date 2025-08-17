@@ -23,11 +23,12 @@ class FragmentOrder:
     """Fragment order model"""
     id: str
     username: str
-    months: int
     status: str
     price: float
     currency: str
     created_at: str
+    months: Optional[int] = None  # For Premium orders
+    stars_count: Optional[int] = None  # For Stars orders
     completed_at: Optional[str] = None
     show_sender: bool = False
 
@@ -143,6 +144,68 @@ class FragmentAPI:
             return 39.99
         else:
             return 12.99  # Default to 3 months price
+
+    def _get_price_for_stars(self, stars_count: int) -> float:
+        """Get price for given number of stars from database or fallback to default"""
+        try:
+            # Try to get price from database
+            import asyncio
+            from bot.database.connection import get_connection
+            from bot.database.repository import StarsPricingRepository
+            from bot.config import Config
+            
+            config = Config()
+            
+            # Create event loop if none exists
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # Get price from database
+            async def get_db_price():
+                try:
+                    pool = await get_connection(config.database_url)
+                    pricing_repo = StarsPricingRepository(pool)
+                    pricing = await pricing_repo.get_pricing_by_stars(stars_count)
+                    if pricing and pricing.is_active:
+                        return pricing.price_usd
+                except Exception as e:
+                    logger.error(f"Error getting stars price from database: {e}")
+                return None
+            
+            # Run async function
+            if loop.is_running():
+                # If loop is running, schedule the coroutine
+                future = asyncio.create_task(get_db_price())
+                # Wait for result (this might not work in all contexts)
+                try:
+                    price = loop.run_until_complete(future)
+                    if price is not None:
+                        return price
+                except:
+                    pass
+            else:
+                # If no loop is running, run the coroutine
+                price = loop.run_until_complete(get_db_price())
+                if price is not None:
+                    return price
+            
+        except Exception as e:
+            logger.error(f"Error in _get_price_for_stars: {e}")
+        
+        # Fallback to default prices
+        if stars_count == 50:
+            return 1.00
+        elif stars_count == 100:
+            return 1.50
+        elif stars_count == 200:
+            return 2.50
+        elif stars_count == 500:
+            return 5.00
+        else:
+            return 1.00  # Default to 50 stars price
 
     async def test_authentication(self) -> bool:
         """Test API authentication using the auth endpoint"""
@@ -287,6 +350,86 @@ class FragmentAPI:
             
         except Exception as e:
             logger.error(f"Error creating premium order: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            error_info = {
+                "type": "exception",
+                "code": "exception",
+                "message": str(e),
+                "raw_response": str(e)
+            }
+            return None, error_info
+    
+    async def create_stars_order(self, username: str, stars_count: int, show_sender: bool = False) -> tuple[Optional[FragmentOrder], Optional[dict]]:
+        """Create a new stars order using the simple token. Returns (order, error_info)"""
+        logger.info(f"Creating stars order: username={username}, stars_count={stars_count}, demo_mode={self.demo_mode}")
+        
+        if self.demo_mode:
+            logger.info("Demo mode: Creating demo stars order")
+            
+            # Calculate demo price based on stars count
+            price = self._get_price_for_stars(stars_count)
+            
+            # Create demo order
+            order = FragmentOrder(
+                id=f"demo_stars_order_{username}_{datetime.datetime.now().timestamp()}",
+                username=username,
+                stars_count=stars_count,
+                status="pending",
+                price=price,
+                currency="USD",
+                created_at=datetime.datetime.now().isoformat(),
+                show_sender=show_sender
+            )
+            
+            logger.info(f"Demo stars order created: {order}")
+            return order, None
+        
+        # Real API mode with token
+        try:
+            payload = {
+                "username": username,
+                "quantity": int(stars_count),  # Ensure stars_count is an integer
+                "show_sender": show_sender
+            }
+            
+            logger.info(f"Sending request to {self.base_url}/order/stars/ with payload: {payload}")
+            logger.info(f"Using headers: {self.headers}")
+            
+            response = requests.post(
+                f"{self.base_url}/order/stars/", 
+                headers=self.headers,
+                json=payload
+            )
+            
+            logger.info(f"Response status: {response.status_code}")
+            logger.info(f"Response headers: {dict(response.headers)}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"API response: {data}")
+                
+                order = FragmentOrder(
+                    id=data.get("id", f"stars_order_{username}_{stars_count}"),
+                    username=data.get("username", username),
+                    stars_count=data.get("quantity", stars_count),
+                    status=data.get("status", "pending"),
+                    price=float(data.get("price", self._get_price_for_stars(stars_count))),
+                    currency=data.get("currency", "USD"),
+                    created_at=data.get("created_at", datetime.datetime.now().isoformat()),
+                    show_sender=data.get("show_sender", show_sender)
+                )
+                
+                logger.info(f"Real stars order created: {order}")
+                return order, None
+            else:
+                # Handle different error codes
+                error_info = self._parse_error_response(response)
+                logger.error(f"API error: {response.status_code} - {error_info}")
+                return None, error_info
+            
+        except Exception as e:
+            logger.error(f"Error creating stars order: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             error_info = {

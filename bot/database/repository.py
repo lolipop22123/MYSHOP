@@ -3,7 +3,7 @@ import logging
 from typing import Optional, List
 from datetime import datetime, timezone, timedelta
 
-from bot.database.models import User, Chat, Message, Category, Subcategory, Product, Order, PremiumPricing, UserBalance, CryptoPayInvoice
+from bot.database.models import User, Chat, Message, Category, Subcategory, Product, Order, PremiumPricing, StarsPricing, UserBalance, CryptoPayInvoice
 from .connection import get_db_manager
 
 logger = logging.getLogger(__name__)
@@ -567,6 +567,90 @@ class PremiumPricingRepository:
         except Exception as e:
             logger.error(f"Error toggling pricing status for {months} months: {e}")
             return False 
+
+
+class StarsPricingRepository:
+    """Repository for Telegram Stars pricing"""
+    
+    def __init__(self, connection):
+        self.connection = connection
+    
+    async def get_all_pricing(self) -> List['StarsPricing']:
+        """Get all stars pricing"""
+        try:
+            rows = await self.connection.fetch("""
+                SELECT id, stars_count, price_usd, is_active, created_at, updated_at
+                FROM stars_pricing 
+                ORDER BY stars_count
+            """)
+            
+            pricing_list = []
+            for row in rows:
+                pricing = StarsPricing(
+                    id=row[0],
+                    stars_count=row[1],
+                    price_usd=float(row[2]),
+                    is_active=row[3],
+                    created_at=row[4],
+                    updated_at=row[5]
+                )
+                pricing_list.append(pricing)
+            
+            return pricing_list
+        except Exception as e:
+            logger.error(f"Error getting all stars pricing: {e}")
+            return []
+    
+    async def get_pricing_by_stars(self, stars_count: int) -> Optional['StarsPricing']:
+        """Get pricing for specific stars count"""
+        try:
+            row = await self.connection.fetchrow("""
+                SELECT id, stars_count, price_usd, is_active, created_at, updated_at
+                FROM stars_pricing 
+                WHERE stars_count = $1
+            """, stars_count)
+            
+            if row:
+                return StarsPricing(
+                    id=row[0],
+                    stars_count=row[1],
+                    price_usd=float(row[2]),
+                    is_active=row[3],
+                    created_at=row[4],
+                    updated_at=row[5]
+                )
+            return None
+        except Exception as e:
+            logger.error(f"Error getting pricing for {stars_count} stars: {e}")
+            return None
+    
+    async def update_pricing(self, stars_count: int, price_usd: float) -> bool:
+        """Update pricing for specific stars count"""
+        try:
+            await self.connection.execute("""
+                UPDATE stars_pricing 
+                SET price_usd = $1, updated_at = NOW()
+                WHERE stars_count = $1
+            """, price_usd, stars_count)
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error updating pricing for {stars_count} stars: {e}")
+            return False
+    
+    async def toggle_pricing_status(self, stars_count: int) -> bool:
+        """Toggle pricing active status"""
+        try:
+            await self.connection.execute("""
+                UPDATE stars_pricing 
+                SET is_active = NOT is_active, updated_at = NOW()
+                WHERE stars_count = $1
+            """, stars_count)
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error toggling pricing status for {stars_count} stars: {e}")
+            return False
 
 
 class UserBalanceRepository:

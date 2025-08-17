@@ -1050,7 +1050,7 @@ async def admin_users_callback(callback: CallbackQuery):
             InlineKeyboardButton(text="🗑️ Удалить пользователя", callback_data="admin_delete_user")
         ],
         [
-            InlineKeyboardButton(text="⬅️ Назад", callback_data="admin")
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_panel")
         ]
     ])
     
@@ -1405,7 +1405,7 @@ async def admin_shop_settings_callback(callback: CallbackQuery):
             InlineKeyboardButton(text="📝 Изменить сообщение", callback_data="admin_edit_maintenance_message")
         ],
         [
-            InlineKeyboardButton(text="⬅️ Назад", callback_data="admin")
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_panel")
         ]
     ])
     

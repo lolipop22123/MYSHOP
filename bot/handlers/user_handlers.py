@@ -16,6 +16,7 @@ router = Router()
 class FragmentStates(StatesGroup):
     """States for Fragment operations"""
     waiting_for_username = State()
+    waiting_for_stars_count = State()
 
 
 @router.message(Command("start"))
@@ -63,20 +64,33 @@ async def cmd_start(message: Message, state: FSMContext):
             username=message.chat.username
         )
     
+    # Check shop status
+    from bot.database import ShopSettingsRepository
+    shop_repo = ShopSettingsRepository(config.database_url)
+    is_shop_open = await shop_repo.is_shop_open()
+    
     # Create main menu keyboard
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    keyboard_buttons = [
         [
-            InlineKeyboardButton(text=get_text("btn_shop", user.language), callback_data="shop"),
-            InlineKeyboardButton(text=get_text("btn_orders", user.language), callback_data="my_orders")
+            
+            InlineKeyboardButton(text=get_text("btn_profile", user.language), callback_data="profile")
         ],
         [
-            InlineKeyboardButton(text=get_text("btn_profile", user.language), callback_data="profile"),
+            InlineKeyboardButton(text=get_text("btn_orders", user.language), callback_data="my_orders"),
             InlineKeyboardButton(text=get_text("btn_help", user.language), callback_data="help")
-        ],
-        [
-            InlineKeyboardButton(text=get_text("btn_fragment_premium", user.language), callback_data="fragment_premium")
         ]
-    ])
+    ]
+    
+    # Only show Fragment Premium button if shop is open
+    if is_shop_open:
+        keyboard_buttons.append([
+            InlineKeyboardButton(text=get_text("btn_fragment_premium", user.language), callback_data="fragment_premium")
+        ])
+        keyboard_buttons.append([
+            InlineKeyboardButton(text=get_text("btn_fragment_stars", user.language), callback_data="fragment_stars")
+        ])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     
     welcome_text = get_text("welcome", user.language, name=message.from_user.first_name)
     if is_new_user:
@@ -124,35 +138,112 @@ async def cmd_help(message: Message):
 @router.message(Command("profile"))
 async def cmd_profile(message: Message):
     """Handle /profile command"""
+    logger.info(f"Profile command called by user {message.from_user.id}")
     config = Config()
-    user_repo = UserRepository(config.database_url)
     
-    user = await user_repo.get_user_by_telegram_id(message.from_user.id)
-    if not user:
-        await message.answer(get_text("profile_not_found", "ru"))
-        return
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
-        ]
-    ])
-    
-    if user:
-        profile_text = get_text("profile_title", user.language).format(
-            telegram_id=user.telegram_id,
-            first_name=user.first_name or 'Не указано',
-            last_name=user.last_name or 'Не указано',
-            username=user.username or 'Не указано',
-            created_at=user.created_at.strftime('%d.%m.%Y %H:%M'),
-            status='Активен' if user.is_active else 'Неактивен',
-            balance=0,
-            orders=0,
-            rating="Новый клиент"
-        )
-        await message.answer(profile_text, reply_markup=keyboard, parse_mode="HTML")
-    else:
-        await message.answer(get_text("profile_not_found", user.language), reply_markup=keyboard)
+    try:
+        from bot.database.connection import get_connection
+        
+        pool = await get_connection(config.database_url)
+        user_repo = UserRepository(pool)
+        
+        user = await user_repo.get_user_by_telegram_id(message.from_user.id)
+        if not user:
+            await message.answer(get_text("profile_not_found", "ru"))
+            return
+        
+        # Get user balance
+        from bot.database.repository import UserBalanceRepository
+        balance_repo = UserBalanceRepository(pool)
+        user_balance = await balance_repo.get_user_balance(user.id)
+        
+        # Create balance if not exists
+        if not user_balance:
+            try:
+                await balance_repo.create_user_balance(user.id)
+                user_balance = await balance_repo.get_user_balance(user.id)
+                logger.info(f"Created new balance for user {user.id} in profile command")
+            except Exception as balance_error:
+                logger.error(f"Error creating user balance in profile command: {balance_error}")
+                user_balance = None
+        
+        logger.info(f"User {user.id} balance in profile command: {user_balance}")
+        
+        # Get user orders count
+        from bot.database.repository import OrderRepository
+        order_repo = OrderRepository(pool)
+        user_orders = await order_repo.get_orders_by_user(user.id)
+        orders_count = len(user_orders) if user_orders else 0
+        
+        # Determine rating based on orders
+        if orders_count == 0:
+            rating = "Новый клиент"
+        elif orders_count < 5:
+            rating = "Постоянный клиент"
+        elif orders_count < 10:
+            rating = "VIP клиент"
+        else:
+            rating = "Премиум клиент"
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text=get_text("btn_fragment_premium", user.language), callback_data="fragment_premium")
+            ],
+            [
+                InlineKeyboardButton(text=get_text("btn_fragment_stars", user.language), callback_data="fragment_stars")
+            ],
+            [
+                InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+            ]
+        ])
+        
+        logger.info(f"User {user.id} orders count in profile command: {orders_count}, rating: {rating}")
+        logger.info(f"User {user.id} rating determined in profile command: {rating}")
+        logger.info(f"User {user.id} orders count in profile command: {orders_count}")
+        logger.info(f"User {user.id} orders count in profile command: {orders_count}")
+        
+        if user:
+            logger.info(f"Creating profile text for user {user.id}, language: {user.language}")
+            
+            try:
+                profile_text = get_text("profile_title", user.language).format(
+                    telegram_id=user.telegram_id,
+                    first_name=user.first_name or 'Не указано',
+                    last_name=user.last_name or 'Не указано',
+                    username=user.username or 'Не указано',
+                    created_at=user.created_at.strftime('%d.%m.%Y %H:%M'),
+                    status='Активен' if user.is_active else 'Неактивен',
+                    balance=f"${getattr(user_balance, 'balance_usd', 0.0):.2f}",
+                    orders=orders_count,
+                    rating=rating
+                )
+                logger.info(f"Profile text created successfully using get_text")
+            except Exception as format_error:
+                logger.warning(f"Error formatting profile text: {format_error}, using fallback")
+                # Fallback profile text
+                profile_text = (
+                    f"👤 <b>Профиль пользователя</b>\n\n"
+                    f"🆔 <b>Telegram ID:</b> {user.telegram_id}\n"
+                    f"👤 <b>Имя:</b> {user.first_name or 'Не указано'}\n"
+                    f"📝 <b>Фамилия:</b> {user.last_name or 'Не указано'}\n"
+                    f"🔗 <b>Username:</b> @{user.username or 'Не указано'}\n"
+                    f"📅 <b>Дата регистрации:</b> {user.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+                    f"✅ <b>Статус:</b> {'Активен' if user.is_active else 'Неактивен'}\n"
+                    f"💰 <b>Баланс:</b> ${getattr(user_balance, 'balance_usd', 0.0):.2f}\n"
+                    f"📦 <b>Заказов:</b> {orders_count}\n"
+                    f"⭐ <b>Рейтинг:</b> {rating}"
+                )
+                logger.info(f"Fallback profile text created")
+            
+            logger.info(f"Profile text length: {len(profile_text)}")
+            await message.answer(profile_text, reply_markup=keyboard, parse_mode="HTML")
+            logger.info(f"Profile sent successfully to user {message.from_user.id}")
+        else:
+            await message.answer(get_text("profile_not_found", user.language), reply_markup=keyboard)
+            
+    except Exception as e:
+        logger.error(f"Error in profile command: {e}")
+        await message.answer("❌ Ошибка загрузки профиля. Попробуйте позже.")
 
 
 @router.message(lambda message: message.text and not message.text.startswith('/'))
@@ -175,6 +266,52 @@ async def handle_fragment_username(message: Message, state: FSMContext):
         logger.error(f"User not found for telegram_id: {message.from_user.id}")
         return
     
+    # Check shop status first
+    from bot.database import ShopSettingsRepository
+    shop_repo = ShopSettingsRepository(config.database_url)
+    is_shop_open = await shop_repo.is_shop_open()
+    
+    if not is_shop_open:
+        # Get maintenance message
+        maintenance_message = await shop_repo.get_maintenance_message()
+        
+        if user.language == "ru":
+            shop_closed_message = (
+                "⏳ <b>Продажа временно приостановлена</b>\n\n"
+                f"{maintenance_message}\n\n"
+                "💡 <b>Что делать:</b>\n"
+                "• Попробуйте позже\n"
+                "• Следите за обновлениями\n\n"
+                "📞 <b>Поддержка:</b>\n"
+                "• Telegram: @makker_o"
+            )
+        else:
+            shop_closed_message = (
+                "⏳ <b>Sales temporarily suspended</b>\n\n"
+                f"{maintenance_message}\n\n"
+                "💡 <b>What to do:</b>\n"
+                "• Try again later\n"
+                "• Follow updates\n\n"
+                "📞 <b>Support:</b>\n"
+                "• Telegram: @makker_o"
+            )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+            ]
+        ])
+        
+        await message.answer(
+            shop_closed_message,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        
+        # Clear state
+        await state.clear()
+        return
+    
     username = message.text.strip()
     
     # Validate username
@@ -193,25 +330,27 @@ async def handle_fragment_username(message: Message, state: FSMContext):
         )
         return
     
-    # Get months from state
+    # Get months or stars from state
     data = await state.get_data()
     months = data.get("fragment_months")
+    stars_count = data.get("fragment_stars_count")
     direct_payment_mode = data.get("direct_payment_mode", False)
     direct_payment_amount = data.get("direct_payment_amount")
     
-    logger.info(f"Retrieved months from state: {months}, direct_payment_mode: {direct_payment_mode}")
+    logger.info(f"Retrieved months from state: {months}, stars_count: {stars_count}, direct_payment_mode: {direct_payment_mode}")
     
-    if not months and not direct_payment_mode:
-        logger.error("No months found in state and not in direct payment mode")
-        await message.answer("❌ Ошибка: количество месяцев не выбрано")
+    if not months and not stars_count and not direct_payment_mode:
+        logger.error("No months or stars found in state and not in direct payment mode")
+        await message.answer("❌ Ошибка: количество месяцев или звезд не выбрано")
         await state.clear()
         return
     
     # If in direct payment mode, use stored values
     if direct_payment_mode:
         months = data.get("direct_payment_months")
+        stars_count = data.get("direct_payment_stars_count")
         amount = data.get("direct_payment_amount")
-        logger.info(f"Direct payment mode: {months} months, ${amount}")
+        logger.info(f"Direct payment mode: {months} months, {stars_count} stars, ${amount}")
     else:
         amount = None  # Will be calculated from Fragment API
     
@@ -342,10 +481,297 @@ async def handle_fragment_username(message: Message, state: FSMContext):
                 return
         
         else:
-            # Regular mode - create Fragment order
-            logger.info(f"Creating premium order for username: {username}, months: {months}")
-            # Create premium order
-            order, error_info = await fragment_api.create_premium_order(username, months, show_sender=False)
+            # Regular mode - check user balance and offer appropriate options
+            logger.info(f"Regular mode for username: {username}, months: {months}, stars_count: {stars_count}")
+            
+            # Get balance info from state
+            user_balance = data.get("user_balance", 0.0)
+            required_amount = data.get("required_amount", 0.0)
+            has_sufficient_balance = data.get("has_sufficient_balance", False)
+            
+            # Determine order type and create appropriate order
+            if months:
+                # Premium subscription order
+                logger.info(f"Creating Premium subscription order for {months} months")
+                
+                # Ensure required_amount is valid, use fallback if needed
+                if required_amount <= 0:
+                    logger.warning(f"Invalid required_amount from state: {required_amount}, using fallback")
+                    fallback_prices = {3: 12.99, 9: 29.99, 12: 39.99}
+                    required_amount = fallback_prices.get(months, 12.99)
+                    # Update state with correct amount
+                    await state.update_data(required_amount=required_amount)
+                
+                logger.info(f"User balance: ${user_balance}, required for Premium: ${required_amount}, sufficient: {has_sufficient_balance}")
+                
+                if has_sufficient_balance:
+                    # User has enough balance, create Fragment order
+                    logger.info(f"Creating Fragment Premium order with user balance")
+                    order, error_info = await fragment_api.create_premium_order(username, months, show_sender=False)
+                else:
+                    # User doesn't have enough balance, offer direct payment
+                    logger.info(f"User insufficient balance for Premium, offering direct payment")
+                    order = None
+                    error_info = None
+                    
+                    # Create direct payment offer
+                    try:
+                        # Final validation of required_amount
+                        if required_amount <= 0:
+                            logger.error(f"Final validation failed: required_amount = {required_amount}")
+                            await message.answer("❌ Ошибка: неверная стоимость подписки. Попробуйте снова.")
+                            await state.clear()
+                            return
+                        
+                        from bot.database.connection import get_connection
+                        from bot.database.repository import CryptoPayInvoiceRepository
+                        from bot.crypto_pay_api import CryptoPayAPI
+                        
+                        pool = await get_connection(config.database_url)
+                        invoice_repo = CryptoPayInvoiceRepository(pool)
+                        
+                        # Create Crypto Pay invoice
+                        crypto_api = CryptoPayAPI(config.crypto_pay_token, config.crypto_pay_testnet)
+                        
+                        # Create invoice description
+                        description = f"Telegram Premium {months} месяцев для @{username}"
+                        payload = f"user_{user.id}_premium_{months}m_{username}"
+                        
+                        logger.info(f"Creating Crypto Pay invoice for Premium: amount=${required_amount}, months={months}, username={username}")
+                        
+                        invoice_data = await crypto_api.create_invoice(
+                            amount=required_amount,
+                            asset="USDT",
+                            currency_type="fiat",
+                            fiat="USD",
+                            description=description,
+                            payload=payload
+                        )
+                        
+                        if invoice_data:
+                            # Save invoice to database
+                            invoice_id = invoice_data.get("invoice_id")
+                            crypto_pay_url = invoice_data.get("pay_url")
+                            
+                            await invoice_repo.create_invoice(
+                                invoice_id=str(invoice_id),
+                                user_id=user.id,
+                                amount_usd=required_amount,
+                                amount_crypto=0.0,
+                                asset="USDT",
+                                crypto_pay_url=crypto_pay_url,
+                                payload=payload
+                            )
+                            
+                            # Send payment instructions
+                            if user.language == "ru":
+                                payment_message = (
+                                    f"💰 <b>Недостаточно средств для {months} месяцев!</b>\n\n"
+                                    f"Ваш текущий баланс: <b>${user_balance:.2f}</b>\n"
+                                    f"Стоимость подписки: <b>${required_amount:.2f}</b>\n"
+                                    f"Не хватает: <b>${required_amount - user_balance:.2f}</b>\n\n"
+                                    f"🚀 <b>Оплатить подписку напрямую:</b>\n"
+                                    f"📱 <b>Telegram Premium:</b> {months} месяцев\n"
+                                    f"👤 <b>Для аккаунта:</b> @{username}\n"
+                                    f"💰 <b>Сумма:</b> ${required_amount:.2f}\n\n"
+                                    f"💳 <b>Способы оплаты:</b> USDT, TON, BTC, ETH\n\n"
+                                    f"🔗 <b>Ссылка для оплаты:</b>\n"
+                                    f"{crypto_pay_url}\n\n"
+                                    f"📝 <b>После оплаты:</b>\n"
+                                    f"• Подписка будет активирована автоматически\n"
+                                    f"• Вы получите уведомление об успешной активации\n\n"
+                                    f"⏰ <b>Счет действителен:</b> 1 час"
+                                )
+                            else:
+                                payment_message = (
+                                    f"💰 <b>Insufficient funds for {months} months!</b>\n\n"
+                                    f"Your current balance: <b>${user_balance:.2f}</b>\n"
+                                    f"Subscription cost: <b>${required_amount:.2f}</b>\n"
+                                    f"Missing amount: <b>${required_amount - user_balance:.2f}</b>\n\n"
+                                    f"🚀 <b>Pay for subscription directly:</b>\n"
+                                    f"📱 <b>Telegram Premium:</b> {months} months\n"
+                                    f"👤 <b>For account:</b> @{username}\n"
+                                    f"💰 <b>Amount:</b> ${required_amount:.2f}\n\n"
+                                    f"💳 <b>Payment methods:</b> USDT, TON, BTC, ETH\n\n"
+                                    f"🔗 <b>Payment link:</b>\n"
+                                    f"{crypto_pay_url}\n\n"
+                                    f"📝 <b>After payment:</b>\n"
+                                    f"• Subscription will be activated automatically\n"
+                                    f"• You'll receive notification of successful activation\n\n"
+                                    f"⏰ <b>Invoice valid for:</b> 1 hour"
+                                )
+                            
+                            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                                [
+                                    InlineKeyboardButton(text="🔗 Оплатить", url=crypto_pay_url)
+                                ],
+                                [
+                                    InlineKeyboardButton(text="🔄 Проверить статус", callback_data=f"check_invoice_{invoice_id}")
+                                ],
+                                [
+                                    InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+                                ]
+                            ])
+                            
+                            await message.answer(
+                                payment_message,
+                                reply_markup=keyboard,
+                                parse_mode="HTML"
+                            )
+                            
+                            # Clear state
+                            await state.clear()
+                            return
+                            
+                        else:
+                            raise Exception("Failed to create Crypto Pay invoice")
+                            
+                    except Exception as e:
+                        logger.error(f"Error creating direct payment invoice: {e}")
+                        await message.answer("❌ Ошибка создания счета для оплаты. Попробуйте позже.")
+                        await state.clear()
+                        return
+            elif stars_count:
+                # Stars order
+                logger.info(f"Creating Stars order for {stars_count} stars")
+                
+                # Ensure required_amount is valid, use fallback if needed
+                if required_amount <= 0:
+                    logger.warning(f"Invalid required_amount from state: {required_amount}, using fallback")
+                    fallback_prices = {50: 1.00, 100: 1.50, 200: 2.50, 500: 5.00}
+                    required_amount = fallback_prices.get(stars_count, 1.00)
+                    # Update state with correct amount
+                    await state.update_data(required_amount=required_amount)
+                
+                logger.info(f"User balance: ${user_balance}, required for Stars: ${required_amount}, sufficient: {has_sufficient_balance}")
+                
+                if has_sufficient_balance:
+                    # User has enough balance, create Fragment order
+                    logger.info(f"Creating Fragment Stars order with user balance")
+                    order, error_info = await fragment_api.create_stars_order(username, stars_count, show_sender=False)
+                else:
+                    # User doesn't have enough balance, offer direct payment
+                    logger.info(f"User insufficient balance for Stars, offering direct payment")
+                    order = None
+                    error_info = None
+                    
+                    # Create direct payment offer
+                    try:
+                        # Final validation of required_amount
+                        if required_amount <= 0:
+                            logger.error(f"Final validation failed: required_amount = {required_amount}")
+                            await message.answer("❌ Ошибка: неверная стоимость звезд. Попробуйте снова.")
+                            await state.clear()
+                            return
+                        
+                        from bot.database.connection import get_connection
+                        from bot.database.repository import CryptoPayInvoiceRepository
+                        from bot.crypto_pay_api import CryptoPayAPI
+                        
+                        pool = await get_connection(config.database_url)
+                        invoice_repo = CryptoPayInvoiceRepository(pool)
+                        
+                        # Create Crypto Pay invoice
+                        crypto_api = CryptoPayAPI(config.crypto_pay_token, config.crypto_pay_testnet)
+                        
+                        # Create invoice description
+                        description = f"Telegram Stars {stars_count} штук для @{username}"
+                        payload = f"user_{user.id}_stars_{stars_count}_{username}"
+                        
+                        logger.info(f"Creating Crypto Pay invoice for Stars: amount=${required_amount}, stars_count={stars_count}, username={username}")
+                        
+                        invoice_data = await crypto_api.create_invoice(
+                            amount=required_amount,
+                            asset="USDT",
+                            currency_type="fiat",
+                            fiat="USD",
+                            description=description,
+                            payload=payload
+                        )
+                        
+                        if invoice_data:
+                            # Save invoice to database
+                            invoice_id = invoice_data.get("invoice_id")
+                            crypto_pay_url = invoice_data.get("pay_url")
+                            
+                            await invoice_repo.create_invoice(
+                                invoice_id=str(invoice_id),
+                                user_id=user.id,
+                                amount_usd=required_amount,
+                                amount_crypto=0.0,
+                                asset="USDT",
+                                crypto_pay_url=crypto_pay_url,
+                                payload=payload
+                            )
+                            
+                            # Send payment instructions
+                            if user.language == "ru":
+                                payment_message = (
+                                    f"💰 <b>Недостаточно средств для {stars_count} звезд!</b>\n\n"
+                                    f"Ваш текущий баланс: <b>${user_balance:.2f}</b>\n"
+                                    f"Стоимость звезд: <b>${required_amount:.2f}</b>\n"
+                                    f"Не хватает: <b>${required_amount - user_balance:.2f}</b>\n\n"
+                                    f"🚀 <b>Оплатить звезды напрямую:</b>\n"
+                                    f"⭐ <b>Telegram Stars:</b> {stars_count} штук\n"
+                                    f"👤 <b>Для аккаунта:</b> @{username}\n"
+                                    f"💰 <b>Сумма:</b> ${required_amount:.2f}\n\n"
+                                    f"💳 <b>Способы оплаты:</b> USDT, TON, BTC, ETH\n\n"
+                                    f"🔗 <b>Ссылка для оплаты:</b>\n"
+                                    f"{crypto_pay_url}\n\n"
+                                    f"📝 <b>После оплаты:</b>\n"
+                                    f"• Звезды будут отправлены автоматически\n"
+                                    f"• Вы получите уведомление об успешной отправке\n\n"
+                                    f"⏰ <b>Счет действителен:</b> 1 час"
+                                )
+                            else:
+                                payment_message = (
+                                    f"💰 <b>Insufficient funds for {stars_count} stars!</b>\n\n"
+                                    f"Your current balance: <b>${user_balance:.2f}</b>\n"
+                                    f"Stars cost: <b>${required_amount:.2f}</b>\n"
+                                    f"Missing amount: <b>${required_amount - user_balance:.2f}</b>\n\n"
+                                    f"🚀 <b>Pay for stars directly:</b>\n"
+                                    f"⭐ <b>Telegram Stars:</b> {stars_count} pieces\n"
+                                    f"👤 <b>For account:</b> @{username}\n"
+                                    f"💰 <b>Amount:</b> ${required_amount:.2f}\n\n"
+                                    f"💳 <b>Payment methods:</b> USDT, TON, BTC, ETH\n\n"
+                                    f"🔗 <b>Payment link:</b>\n"
+                                    f"{crypto_pay_url}\n\n"
+                                    f"📝 <b>After payment:</b>\n"
+                                    f"• Stars will be sent automatically\n"
+                                    f"• You'll receive notification of successful sending\n\n"
+                                    f"⏰ <b>Invoice valid for:</b> 1 hour"
+                                )
+                            
+                            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                                [
+                                    InlineKeyboardButton(text="🔗 Оплатить", url=crypto_pay_url)
+                                ],
+                                [
+                                    InlineKeyboardButton(text="🔄 Проверить статус", callback_data=f"check_invoice_{invoice_id}")
+                                ],
+                                [
+                                    InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+                                ]
+                            ])
+                            
+                            await message.answer(
+                                payment_message,
+                                reply_markup=keyboard,
+                                parse_mode="HTML"
+                            )
+                            
+                            # Clear state
+                            await state.clear()
+                            return
+                            
+                        else:
+                            raise Exception("Failed to create Crypto Pay invoice")
+                            
+                    except Exception as e:
+                        logger.error(f"Error creating direct payment invoice for Stars: {e}")
+                        await message.answer("❌ Ошибка создания счета для оплаты звезд. Попробуйте позже.")
+                        await state.clear()
+                        return
         
         if order:
             logger.info(f"Fragment API response: {order}")
@@ -354,15 +780,29 @@ async def handle_fragment_username(message: Message, state: FSMContext):
             # Notify admins about new Fragment order
             try:
                 from bot.handlers.admin_handlers import notify_admins
-                order_message = f"💎 <b>Новый Fragment Premium заказ!</b>\n\n"
-                order_message += f"👤 <b>Пользователь:</b> {user.first_name} {user.last_name or ''}\n"
-                order_message += f"🔗 <b>Username:</b> @{user.username or 'Не указан'}\n"
-                order_message += f"🆔 <b>Telegram ID:</b> {user.telegram_id}\n"
-                order_message += f"📱 <b>Premium для:</b> {username}\n"
-                order_message += f"⏰ <b>Длительность:</b> {months} месяцев\n"
-                order_message += f"💰 <b>Сумма:</b> ${order.price}\n"
-                order_message += f"🆔 <b>ID заказа:</b> {order.id}\n"
-                order_message += f"⏰ <b>Время создания:</b> {order.created_at}"
+                
+                if months:
+                    # Premium order
+                    order_message = f"💎 <b>Новый Fragment Premium заказ!</b>\n\n"
+                    order_message += f"👤 <b>Пользователь:</b> {user.first_name} {user.last_name or ''}\n"
+                    order_message += f"🔗 <b>Username:</b> @{user.username or 'Не указан'}\n"
+                    order_message += f"🆔 <b>Telegram ID:</b> {user.telegram_id}\n"
+                    order_message += f"📱 <b>Premium для:</b> {username}\n"
+                    order_message += f"⏰ <b>Длительность:</b> {months} месяцев\n"
+                    order_message += f"💰 <b>Сумма:</b> ${order.price}\n"
+                    order_message += f"🆔 <b>ID заказа:</b> {order.id}\n"
+                    order_message += f"⏰ <b>Время создания:</b> {order.created_at}"
+                elif stars_count:
+                    # Stars order
+                    order_message = f"⭐ <b>Новый Fragment Stars заказ!</b>\n\n"
+                    order_message += f"👤 <b>Пользователь:</b> {user.first_name} {user.last_name or ''}\n"
+                    order_message += f"🔗 <b>Username:</b> @{user.username or 'Не указан'}\n"
+                    order_message += f"🆔 <b>Telegram ID:</b> {user.telegram_id}\n"
+                    order_message += f"⭐ <b>Stars для:</b> {username}\n"
+                    order_message += f"🔢 <b>Количество:</b> {stars_count} звезд\n"
+                    order_message += f"💰 <b>Сумма:</b> ${order.price}\n"
+                    order_message += f"🆔 <b>ID заказа:</b> {order.id}\n"
+                    order_message += f"⏰ <b>Время создания:</b> {order.created_at}"
                 
                 await notify_admins(message.bot, order_message, config)
             except Exception as e:
@@ -374,11 +814,19 @@ async def handle_fragment_username(message: Message, state: FSMContext):
                 ]
             ])
             
-            await message.answer(
-                get_text("fragment_order_created", user.language),
-                reply_markup=keyboard,
-                parse_mode="HTML"
-            )
+            # Send appropriate success message
+            if months:
+                await message.answer(
+                    get_text("fragment_order_created", user.language),
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+            elif stars_count:
+                await message.answer(
+                    get_text("fragment_stars_order_created", user.language),
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
         else:
             # Handle error
             if error_info:
@@ -410,34 +858,64 @@ async def handle_fragment_username(message: Message, state: FSMContext):
                 if is_wallet_error:
                     # Special handling for wallet balance error
                     if user.language == "ru":
-                        user_error_message = "⏳ <b>Продажа временно приостановлена</b>\n\n"
-                        user_error_message += "Извиняемся за временные трудности. Продажа Telegram Premium скоро возобновится!\n\n"
-                        user_error_message += "💡 <b>Что делать:</b>\n"
-                        user_error_message += "• Попробуйте позже\n"
-                        user_error_message += "• Следите за обновлениями\n\n"
-                        user_error_message += "📞 <b>Поддержка:</b>\n"
-                        user_error_message += "• Telegram: @makker_o"
+                        if months:
+                            user_error_message = "⏳ <b>Продажа временно приостановлена</b>\n\n"
+                            user_error_message += "Извиняемся за временные трудности. Продажа Telegram Premium скоро возобновится!\n\n"
+                            user_error_message += "💡 <b>Что делать:</b>\n"
+                            user_error_message += "• Попробуйте позже\n"
+                            user_error_message += "• Следите за обновлениями\n\n"
+                            user_error_message += "📞 <b>Поддержка:</b>\n"
+                            user_error_message += "• Telegram: @makker_o"
+                        elif stars_count:
+                            user_error_message = "⏳ <b>Продажа временно приостановлена</b>\n\n"
+                            user_error_message += "Извиняемся за временные трудности. Продажа Telegram Stars скоро возобновится!\n\n"
+                            user_error_message += "💡 <b>Что делать:</b>\n"
+                            user_error_message += "• Попробуйте позже\n"
+                            user_error_message += "• Следите за обновлениями\n\n"
+                            user_error_message += "📞 <b>Поддержка:</b>\n"
+                            user_error_message += "• Telegram: @makker_o"
                     else:
-                        user_error_message = "⏳ <b>Sales temporarily suspended</b>\n\n"
-                        user_error_message += "Sorry for the inconvenience. Telegram Premium sales will resume soon!\n\n"
-                        user_error_message += "💡 <b>What to do:</b>\n"
-                        user_error_message += "• Try again later\n"
-                        user_error_message += "• Follow updates\n\n"
-                        user_error_message += "📞 <b>Support:</b>\n"
-                        user_error_message += "• Telegram: @makker_o"
+                        if months:
+                            user_error_message = "⏳ <b>Sales temporarily suspended</b>\n\n"
+                            user_error_message += "Sorry for the inconvenience. Telegram Premium sales will resume soon!\n\n"
+                            user_error_message += "💡 <b>What to do:</b>\n"
+                            user_error_message += "• Try again later\n"
+                            user_error_message += "• Follow updates\n\n"
+                            user_error_message += "📞 <b>Support:</b>\n"
+                            user_error_message += "• Telegram: @makker_o"
+                        elif stars_count:
+                            user_error_message = "⏳ <b>Sales temporarily suspended</b>\n\n"
+                            user_error_message += "Sorry for the inconvenience. Telegram Stars sales will resume soon!\n\n"
+                            user_error_message += "💡 <b>What to do:</b>\n"
+                            user_error_message += "• Try again later\n"
+                            user_error_message += "• Follow updates\n\n"
+                            user_error_message += "📞 <b>Support:</b>\n"
+                            user_error_message += "• Telegram: @makker_o"
                     
                     # Notify admins about wallet balance issue
                     try:
                         from bot.handlers.admin_handlers import notify_admins
-                        admin_message = f"⚠️ <b>ВНИМАНИЕ: Закончился баланс на кошельке TON!</b>\n\n"
-                        admin_message += f"👤 <b>Пользователь:</b> {user.first_name} {user.last_name or ''}\n"
-                        admin_message += f"🔗 <b>Username:</b> @{user.username or 'Не указан'}\n"
-                        admin_message += f"🆔 <b>Telegram ID:</b> {user.telegram_id}\n"
-                        admin_message += f"📱 <b>Пытался купить Premium для:</b> {username}\n"
-                        admin_message += f"⏰ <b>Длительность:</b> {months} месяцев\n\n"
-                        admin_message += f"💰 <b>Ошибка:</b> Недостаточно средств в кошельке Fragment API\n"
-                        admin_message += f"🔗 <b>Кошелек:</b> 0:c8c1c8437bb5377a0d56dde77d2d3932dafc7514c0c5ba3e559a645eeda3fdc5\n"
-                        admin_message += f"💡 <b>Действие:</b> Пополнить кошелек TON токенами"
+                        
+                        if months:
+                            admin_message = f"⚠️ <b>ВНИМАНИЕ: Закончился баланс на кошельке TON!</b>\n\n"
+                            admin_message += f"👤 <b>Пользователь:</b> {user.first_name} {user.last_name or ''}\n"
+                            admin_message += f"🔗 <b>Username:</b> @{user.username or 'Не указан'}\n"
+                            admin_message += f"🆔 <b>Telegram ID:</b> {user.telegram_id}\n"
+                            admin_message += f"📱 <b>Пытался купить Premium для:</b> {username}\n"
+                            admin_message += f"⏰ <b>Длительность:</b> {months} месяцев\n\n"
+                            admin_message += f"💰 <b>Ошибка:</b> Недостаточно средств в кошельке Fragment API\n"
+                            admin_message += f"🔗 <b>Кошелек:</b> 0:c8c1c8437bb5377a0d56dde77d2d3932dafc7514c0c5ba3e559a645eeda3fdc5\n"
+                            admin_message += f"💡 <b>Действие:</b> Пополнить кошелек TON токенами"
+                        elif stars_count:
+                            admin_message = f"⚠️ <b>ВНИМАНИЕ: Закончился баланс на кошельке TON!</b>\n\n"
+                            admin_message += f"👤 <b>Пользователь:</b> {user.first_name} {user.last_name or ''}\n"
+                            admin_message += f"🔗 <b>Username:</b> @{user.username or 'Не указан'}\n"
+                            admin_message += f"🆔 <b>Telegram ID:</b> {user.telegram_id}\n"
+                            admin_message += f"⭐ <b>Пытался купить Stars для:</b> {username}\n"
+                            admin_message += f"🔢 <b>Количество:</b> {stars_count} звезд\n\n"
+                            admin_message += f"💰 <b>Ошибка:</b> Недостаточно средств в кошельке Fragment API\n"
+                            admin_message += f"🔗 <b>Кошелек:</b> 0:c8c1c8437bb5377a0d56dde77d2d3932dafc7514c0c5ba3e559a645eeda3fdc5\n"
+                            admin_message += f"💡 <b>Действие:</b> Пополнить кошелек TON токенами"
                         
                         await notify_admins(message.bot, admin_message, config)
                     except Exception as e:
@@ -449,7 +927,12 @@ async def handle_fragment_username(message: Message, state: FSMContext):
                     
                     # Create user-friendly error message
                     if user.language == "ru":
-                        user_error_message = f"❌ <b>Ошибка при создании заказа:</b>\n\n{error_message}"
+                        if months:
+                            user_error_message = f"❌ <b>Ошибка при создании Premium заказа:</b>\n\n{error_message}"
+                        elif stars_count:
+                            user_error_message = f"❌ <b>Ошибка при создании Stars заказа:</b>\n\n{error_message}"
+                        else:
+                            user_error_message = f"❌ <b>Ошибка при создании заказа:</b>\n\n{error_message}"
                         
                         # Add specific help for common errors
                         if "0" in str(error_info):
@@ -459,7 +942,12 @@ async def handle_fragment_username(message: Message, state: FSMContext):
                         elif "20" in str(error_info):
                             user_error_message += "\n\n💡 <b>Решение:</b>\n• Проверьте правильность username\n• Убедитесь, что пользователь существует"
                     else:
-                        user_error_message = f"❌ <b>Error creating order:</b>\n\n{error_message}"
+                        if months:
+                            user_error_message = f"❌ <b>Error creating Premium order:</b>\n\n{error_message}"
+                        elif stars_count:
+                            user_error_message = f"❌ <b>Error creating Stars order:</b>\n\n{error_message}"
+                        else:
+                            user_error_message = f"❌ <b>Error creating order:</b>\n\n{error_message}"
                         
                         # Add specific help for common errors
                         if "0" in str(error_info):
@@ -470,9 +958,19 @@ async def handle_fragment_username(message: Message, state: FSMContext):
                             user_error_message += "\n\n💡 <b>Solution:</b>\n• Check username spelling\n• Ensure user exists"
             else:
                 if user.language == "ru":
-                    user_error_message = "❌ <b>Неизвестная ошибка при создании заказа</b>\n\nПопробуйте позже или обратитесь в поддержку."
+                    if months:
+                        user_error_message = "❌ <b>Неизвестная ошибка при создании Premium заказа</b>\n\nПопробуйте позже или обратитесь в поддержку."
+                    elif stars_count:
+                        user_error_message = "❌ <b>Неизвестная ошибка при создании Stars заказа</b>\n\nПопробуйте позже или обратитесь в поддержку."
+                    else:
+                        user_error_message = "❌ <b>Неизвестная ошибка при создании заказа</b>\n\nПопробуйте позже или обратитесь в поддержку."
                 else:
-                    user_error_message = "❌ <b>Unknown error creating order</b>\n\nTry again later or contact support."
+                    if months:
+                        user_error_message = "❌ <b>Unknown error creating Premium order</b>\n\nTry again later or contact support."
+                    elif stars_count:
+                        user_error_message = "❌ <b>Unknown error creating Stars order</b>\n\nTry again later or contact support."
+                    else:
+                        user_error_message = "❌ <b>Unknown error creating order</b>\n\nTry again later or contact support."
             
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [
@@ -487,7 +985,7 @@ async def handle_fragment_username(message: Message, state: FSMContext):
             )
     
     except Exception as e:
-        logger.error(f"Error creating Fragment premium order: {e}")
+        logger.error(f"Error creating Fragment order: {e}")
         logger.error(f"Exception type: {type(e)}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
@@ -507,6 +1005,176 @@ async def handle_fragment_username(message: Message, state: FSMContext):
     finally:
         logger.info("Clearing FSM state")
         await state.clear()
+
+
+@router.message(lambda message: message.text and not message.text.startswith('/'))
+async def handle_stars_count_input(message: Message, state: FSMContext):
+    """Handle stars count input when user types a number instead of selecting from buttons"""
+    current_state = await state.get_state()
+    logger.info(f"Stars count input handler called with state: {current_state}, message: {message.text}")
+    
+    if current_state != FragmentStates.waiting_for_stars_count:
+        logger.info(f"State mismatch: expected {FragmentStates.waiting_for_stars_count}, got {current_state}")
+        return
+    
+    logger.info(f"Processing stars count input: {message.text}")
+    
+    config = Config()
+    user_repo = UserRepository(config.database_url)
+    
+    user = await user_repo.get_user_by_telegram_id(message.from_user.id)
+    if not user:
+        logger.error(f"User not found for telegram_id: {message.from_user.id}")
+        return
+    
+    # Check shop status first
+    from bot.database import ShopSettingsRepository
+    shop_repo = ShopSettingsRepository(config.database_url)
+    is_shop_open = await shop_repo.is_shop_open()
+    
+    if not is_shop_open:
+        # Get maintenance message
+        maintenance_message = await shop_repo.get_maintenance_message()
+        
+        if user.language == "ru":
+            shop_closed_message = (
+                "⏳ <b>Продажа временно приостановлена</b>\n\n"
+                f"{maintenance_message}\n\n"
+                "💡 <b>Что делать:</b>\n"
+                "• Попробуйте позже\n"
+                "• Следите за обновлениями\n\n"
+                "📞 <b>Поддержка:</b>\n"
+                "• Telegram: @makker_o"
+            )
+        else:
+            shop_closed_message = (
+                "⏳ <b>Sales temporarily suspended</b>\n\n"
+                f"{maintenance_message}\n\n"
+                "💡 <b>What to do:</b>\n"
+                "• Try again later\n"
+                "• Follow updates\n\n"
+                "📞 <b>Support:</b>\n"
+                "• Telegram: @makker_o"
+            )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+            ]
+        ])
+        
+        await message.answer(
+            shop_closed_message,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        
+        # Clear state
+        await state.clear()
+        return
+    
+    # Parse stars count from input
+    try:
+        stars_count = int(message.text.strip())
+        
+        # Validate stars count (must be positive and reasonable)
+        if stars_count <= 0 or stars_count > 10000:
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+                ]
+            ])
+            
+            await message.answer(
+                "❌ <b>Неверное количество звезд!</b>\n\n"
+                f"Количество должно быть от 1 до 10,000.\n"
+                f"Вы ввели: {stars_count}\n\n"
+                "Попробуйте еще раз или выберите из предложенных вариантов.",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+            return
+            
+    except ValueError:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+            ]
+        ])
+        
+        await message.answer(
+            "❌ <b>Неверный формат!</b>\n\n"
+            "Пожалуйста, введите число (например: 50, 100, 200).\n\n"
+            "Или выберите количество из предложенных вариантов.",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return
+    
+    logger.info(f"User {user.telegram_id} entered {stars_count} stars")
+    
+    # Check user balance for selected stars
+    try:
+        from bot.database.connection import get_connection
+        from bot.database.repository import UserBalanceRepository, StarsPricingRepository
+        
+        pool = await get_connection(config.database_url)
+        balance_repo = UserBalanceRepository(pool)
+        pricing_repo = StarsPricingRepository(pool)
+        
+        # Get user balance
+        user_balance = await balance_repo.get_user_balance(user.id)
+        current_balance = user_balance.get('balance_usd', 0.0) if user_balance else 0.0
+        
+        # Get price for selected stars
+        pricing = await pricing_repo.get_pricing_by_stars(stars_count)
+        if pricing and pricing.is_active and pricing.price_usd > 0:
+            required_amount = pricing.price_usd
+        else:
+            # Calculate price based on stars count (1 star = $0.02)
+            required_amount = stars_count * 0.02
+        
+        # Ensure required_amount is valid
+        if required_amount <= 0:
+            logger.error(f"Invalid required_amount: {required_amount}, using fallback")
+            required_amount = stars_count * 0.02
+        
+        logger.info(f"User {user.id} balance: ${current_balance}, required for {stars_count} stars: ${required_amount}")
+        
+        # Store balance info in state for later use
+        await state.update_data(
+            user_balance=current_balance,
+            required_amount=required_amount,
+            has_sufficient_balance=(current_balance >= required_amount),
+            fragment_stars_count=stars_count
+        )
+        
+        logger.info(f"User {user.id} balance: ${current_balance}, required: ${required_amount}, sufficient: {current_balance >= required_amount}")
+        
+    except Exception as e:
+        logger.error(f"Error checking user balance for {stars_count} stars: {e}")
+        # Continue with username input even if balance check fails
+        await message.answer("⚠️ Ошибка проверки баланса, но можно продолжить")
+        
+        # Store stars count in state even if balance check fails
+        await state.update_data(fragment_stars_count=stars_count)
+        logger.info(f"Stored {stars_count} stars in FSM state after balance check error")
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+        ]
+    ])
+    
+    await message.answer(
+        get_text("fragment_enter_username", user.language),
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    
+    # Set state to wait for username
+    await state.set_state(FragmentStates.waiting_for_username)
+    logger.info(f"Set FSM state to {FragmentStates.waiting_for_username}")
 
 
 @router.message()
@@ -563,6 +1231,9 @@ async def handle_message(message: Message):
         ],
         [
             InlineKeyboardButton(text=get_text("btn_fragment_premium", user.language), callback_data="fragment_premium")
+        ],
+        [
+            InlineKeyboardButton(text=get_text("btn_fragment_stars", user.language), callback_data="fragment_stars")
         ]
     ])
     
@@ -664,6 +1335,7 @@ async def my_orders_callback(callback: CallbackQuery):
 @router.callback_query(F.data == "profile")
 async def profile_callback(callback: CallbackQuery):
     """Handle profile button"""
+    logger.info(f"Profile callback called by user {callback.from_user.id}")
     config = Config()
     
     try:
@@ -681,9 +1353,16 @@ async def profile_callback(callback: CallbackQuery):
         
         # Get or create user balance
         user_balance = await balance_repo.get_user_balance(user.id)
+        logger.info(f"User {user.id} balance: {user_balance}")
+        
         if not user_balance:
-            await balance_repo.create_user_balance(user.id)
-            user_balance = await balance_repo.get_user_balance(user.id)
+            try:
+                await balance_repo.create_user_balance(user.id)
+                user_balance = await balance_repo.get_user_balance(user.id)
+                logger.info(f"Created new balance for user {user.id}: {user_balance}")
+            except Exception as balance_error:
+                logger.error(f"Error creating user balance: {balance_error}")
+                user_balance = None
         
         # Get user orders count
         from bot.database.repository import OrderRepository
@@ -709,11 +1388,24 @@ async def profile_callback(callback: CallbackQuery):
                 InlineKeyboardButton(text="📊 История платежей", callback_data="payment_history")
             ],
             [
+                InlineKeyboardButton(text=get_text("btn_fragment_premium", user.language), callback_data="fragment_premium")
+            ],
+            [
+                InlineKeyboardButton(text=get_text("btn_fragment_stars", user.language), callback_data="fragment_stars")
+            ],
+            [
                 InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
             ]
         ])
         
-        if user:
+        logger.info(f"User {user.id} orders count: {orders_count}, rating: {rating}")
+        logger.info(f"User {user.id} orders count in profile callback: {orders_count}")
+        logger.info(f"User {user.id} rating determined in profile callback: {rating}")
+        
+        # Create profile text with safe fallbacks
+        logger.info(f"Creating profile text for user {user.id}, language: {user.language}")
+        
+        try:
             profile_text = get_text("profile_title", user.language).format(
                 telegram_id=user.telegram_id,
                 first_name=user.first_name or 'Не указано',
@@ -721,16 +1413,31 @@ async def profile_callback(callback: CallbackQuery):
                 username=user.username or 'Не указано',
                 created_at=user.created_at.strftime('%d.%m.%Y %H:%M'),
                 status='Активен' if user.is_active else 'Неактивен',
-                balance=f"${user_balance.balance_usd:.2f}" if user_balance else "$0.00",
+                balance=f"${getattr(user_balance, 'balance_usd', 0.0):.2f}",
                 orders=orders_count,
                 rating=rating
             )
-            await callback.message.edit_text(profile_text, reply_markup=keyboard, parse_mode="HTML")
-        else:
-            await callback.message.edit_text(
-                get_text("profile_not_found", user.language),
-                reply_markup=keyboard
+            logger.info(f"Profile text created successfully using get_text")
+        except Exception as format_error:
+            logger.warning(f"Error formatting profile text: {format_error}, using fallback")
+            # Fallback profile text
+            profile_text = (
+                f"👤 <b>Профиль пользователя</b>\n\n"
+                f"🆔 <b>Telegram ID:</b> {user.telegram_id}\n"
+                f"👤 <b>Имя:</b> {user.first_name or 'Не указано'}\n"
+                f"📝 <b>Фамилия:</b> {user.last_name or 'Не указано'}\n"
+                f"🔗 <b>Username:</b> @{user.username or 'Не указано'}\n"
+                f"📅 <b>Дата регистрации:</b> {user.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+                f"✅ <b>Статус:</b> {'Активен' if user.is_active else 'Неактивен'}\n"
+                f"💰 <b>Баланс:</b> ${getattr(user_balance, 'balance_usd', 0.0):.2f}\n"
+                f"📦 <b>Заказов:</b> {orders_count}\n"
+                f"⭐ <b>Рейтинг:</b> {rating}"
             )
+            logger.info(f"Fallback profile text created")
+        
+        logger.info(f"Profile text length: {len(profile_text)}")
+        await callback.message.edit_text(profile_text, reply_markup=keyboard, parse_mode="HTML")
+        logger.info(f"Profile callback completed successfully for user {callback.from_user.id}")
     except Exception as e:
         logger.error(f"Error in profile callback: {e}")
         await callback.answer("❌ Ошибка загрузки профиля")
@@ -1080,7 +1787,13 @@ async def main_menu_callback(callback: CallbackQuery):
         await callback.answer("Ошибка: пользователь не найден")
         return
     
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    # Check shop status
+    from bot.database import ShopSettingsRepository
+    shop_repo = ShopSettingsRepository(config.database_url)
+    is_shop_open = await shop_repo.is_shop_open()
+    
+    # Create main menu keyboard
+    keyboard_buttons = [
         [
             InlineKeyboardButton(text=get_text("btn_shop", user.language), callback_data="shop"),
             InlineKeyboardButton(text=get_text("btn_orders", user.language), callback_data="my_orders")
@@ -1088,11 +1801,19 @@ async def main_menu_callback(callback: CallbackQuery):
         [
             InlineKeyboardButton(text=get_text("btn_profile", user.language), callback_data="profile"),
             InlineKeyboardButton(text=get_text("btn_help", user.language), callback_data="help")
-        ],
-        [
-            InlineKeyboardButton(text=get_text("btn_fragment_premium", user.language), callback_data="fragment_premium")
         ]
-    ])
+    ]
+    
+    # Only show Fragment Premium button if shop is open
+    if is_shop_open:
+        keyboard_buttons.append([
+            InlineKeyboardButton(text=get_text("btn_fragment_premium", user.language), callback_data="fragment_premium")
+        ])
+        keyboard_buttons.append([
+            InlineKeyboardButton(text=get_text("btn_fragment_stars", user.language), callback_data="fragment_stars")
+        ])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     
     await callback.message.edit_text(
         get_text("main_menu", user.language),
@@ -1537,129 +2258,50 @@ async def fragment_premium_callback(callback: CallbackQuery):
         await callback.answer("Ошибка: пользователь не найден")
         return
     
-    logger.info(f"User {user.telegram_id} clicked Fragment Premium button")
+    # Check shop status first
+    from bot.database import ShopSettingsRepository
+    shop_repo = ShopSettingsRepository(config.database_url)
+    is_shop_open = await shop_repo.is_shop_open()
     
-    # Check user balance first
-    try:
-        from bot.database.connection import get_connection
-        from bot.database.repository import UserBalanceRepository, PremiumPricingRepository
+    if not is_shop_open:
+        # Get maintenance message
+        maintenance_message = await shop_repo.get_maintenance_message()
         
-        pool = await get_connection(config.database_url)
-        balance_repo = UserBalanceRepository(pool)
-        pricing_repo = PremiumPricingRepository(pool)
-        
-        # Get user balance
-        user_balance = await balance_repo.get_user_balance(user.id)
-        current_balance = user_balance.balance_usd if user_balance else 0.0
-        
-        # Get minimum price from active pricing
-        all_pricing = await pricing_repo.get_all_pricing()
-        active_pricing = [p for p in all_pricing if p.is_active]
-        
-        if not active_pricing:
-            # Fallback to hardcoded minimum price
-            min_price = 12.99  # 3 months
-        else:
-            min_price = min(p.price_usd for p in active_pricing)
-        
-        logger.info(f"User {user.id} balance: ${current_balance}, minimum price: ${min_price}")
-        
-        # Check if user has enough balance
-        if current_balance < min_price:
-            # Get all available pricing for display
-            all_pricing_display = []
-            for pricing in active_pricing:
-                if pricing.is_active:
-                    all_pricing_display.append(f"• {pricing.months} месяцев - <b>${pricing.price_usd:.2f}</b>")
-            
-            if not all_pricing_display:
-                # Fallback to hardcoded prices
-                all_pricing_display = [
-                    "• 3 месяца - <b>$12.99</b>",
-                    "• 9 месяцев - <b>$29.99</b>", 
-                    "• 12 месяцев - <b>$39.99</b>"
-                ]
-            
-            if user.language == "ru":
-                insufficient_message = (
-                    f"💰 <b>Недостаточно средств!</b>\n\n"
-                    f"Ваш текущий баланс: <b>${current_balance:.2f}</b>\n"
-                    f"Минимальная стоимость подписки: <b>${min_price:.2f}</b>\n\n"
-                    f"📋 <b>Все доступные тарифы:</b>\n"
-                    f"{chr(10).join(all_pricing_display)}\n\n"
-                    f"💡 <b>Варианты решения:</b>\n"
-                    f"• Оплатить подписку напрямую (рекомендуется)\n"
-                    f"• Пополнить баланс на недостающую сумму\n\n"
-                    f"🚀 <b>Выберите период для прямой оплаты:</b>"
-                )
-            else:
-                insufficient_message = (
-                    f"💰 <b>Insufficient funds!</b>\n\n"
-                    f"Your current balance: <b>${current_balance:.2f}</b>\n"
-                    f"Minimum subscription cost: <b>${min_price:.2f}</b>\n\n"
-                    f"📋 <b>All available plans:</b>\n"
-                    f"{chr(10).join(all_pricing_display)}\n\n"
-                    f"💡 <b>Solution options:</b>\n"
-                    f"• Pay for subscription directly (recommended)\n"
-                    f"• Top up balance for missing amount\n\n"
-                    f"🚀 <b>Select period for direct payment:</b>"
-                )
-            
-            # Create keyboard with period options for direct payment
-            keyboard_buttons = []
-            
-            # Add period selection buttons
-            for pricing in active_pricing:
-                if pricing.is_active:
-                    keyboard_buttons.append([
-                        InlineKeyboardButton(
-                            text=f"🚀 {pricing.months} месяцев - ${pricing.price_usd:.2f}", 
-                            callback_data=f"direct_payment_{pricing.months}_{pricing.price_usd}"
-                        )
-                    ])
-            
-            if not keyboard_buttons:
-                # Fallback to hardcoded periods
-                fallback_periods = [
-                    (3, 12.99),
-                    (9, 29.99),
-                    (12, 39.99)
-                ]
-                for months, price in fallback_periods:
-                    keyboard_buttons.append([
-                        InlineKeyboardButton(
-                            text=f"🚀 {months} месяцев - ${price:.2f}", 
-                            callback_data=f"direct_payment_{months}_{price}"
-                        )
-                    ])
-            
-            # Add other options
-            keyboard_buttons.append([
-                InlineKeyboardButton(text="💰 Пополнить баланс", callback_data="deposit_balance")
-            ])
-            keyboard_buttons.append([
-                InlineKeyboardButton(text="👤 Профиль", callback_data="profile")
-            ])
-            keyboard_buttons.append([
-                InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
-            ])
-            
-            keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-            
-            await callback.message.edit_text(
-                insufficient_message,
-                reply_markup=keyboard,
-                parse_mode="HTML"
+        if user.language == "ru":
+            shop_closed_message = (
+                "⏳ <b>Продажа временно приостановлена</b>\n\n"
+                f"{maintenance_message}\n\n"
+                "💡 <b>Что делать:</b>\n"
+                "• Попробуйте позже\n"
+                "• Следите за обновлениями\n\n"
+                "📞 <b>Поддержка:</b>\n"
+                "• Telegram: @makker_o"
             )
-            return
+        else:
+            shop_closed_message = (
+                "⏳ <b>Sales temporarily suspended</b>\n\n"
+                f"{maintenance_message}\n\n"
+                "💡 <b>What to do:</b>\n"
+                "• Try again later\n"
+                "• Follow updates\n\n"
+                "📞 <b>Support:</b>\n"
+                "• Telegram: @makker_o"
+            )
         
-        # User has enough balance, show subscription options
-        logger.info(f"User {user.id} has sufficient balance (${current_balance}), showing subscription options")
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+            ]
+        ])
         
-    except Exception as e:
-        logger.error(f"Error checking user balance: {e}")
-        # Continue with subscription options even if balance check fails
-        await callback.answer("⚠️ Ошибка проверки баланса, но можно продолжить")
+        await callback.message.edit_text(
+            shop_closed_message,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return
+    
+    logger.info(f"User {user.telegram_id} clicked Fragment Premium button")
     
     # Create keyboard with month options
     keyboard_buttons = []
@@ -1673,8 +2315,13 @@ async def fragment_premium_callback(callback: CallbackQuery):
         pricing_repo = PremiumPricingRepository(pool)
         all_pricing = await pricing_repo.get_all_pricing()
         
+        logger.info(f"Loaded pricing from database: {len(all_pricing)} items")
+        for p in all_pricing:
+            logger.info(f"Pricing: {p.months} months - ${p.price_usd}, active: {p.is_active}")
+        
         # Filter only active pricing
         active_pricing = [p for p in all_pricing if p.is_active]
+        logger.info(f"Active pricing: {len(active_pricing)} items")
         
         for pricing in active_pricing:
             keyboard_buttons.append([
@@ -1708,6 +2355,118 @@ async def fragment_premium_callback(callback: CallbackQuery):
     logger.info("Showed month selection keyboard to user")
 
 
+@router.callback_query(F.data == "fragment_stars")
+async def fragment_stars_callback(callback: CallbackQuery, state: FSMContext):
+    """Handle Fragment Stars button click"""
+    config = Config()
+    user_repo = UserRepository(config.database_url)
+    
+    user = await user_repo.get_user_by_telegram_id(callback.from_user.id)
+    if not user:
+        await callback.answer("Ошибка: пользователь не найден")
+        return
+    
+    # Check shop status first
+    from bot.database import ShopSettingsRepository
+    shop_repo = ShopSettingsRepository(config.database_url)
+    is_shop_open = await shop_repo.is_shop_open()
+    
+    if not is_shop_open:
+        # Get maintenance message
+        maintenance_message = await shop_repo.get_maintenance_message()
+        
+        if user.language == "ru":
+            shop_closed_message = (
+                "⏳ <b>Продажа временно приостановлена</b>\n\n"
+                f"{maintenance_message}\n\n"
+                "💡 <b>Что делать:</b>\n"
+                "• Попробуйте позже\n"
+                "• Следите за обновлениями\n\n"
+                "📞 <b>Поддержка:</b>\n"
+                "• Telegram: @makker_o"
+            )
+        else:
+            shop_closed_message = (
+                "⏳ <b>Sales temporarily suspended</b>\n\n"
+                f"{maintenance_message}\n\n"
+                "💡 <b>What to do:</b>\n"
+                "• Try again later\n"
+                "• Follow updates\n\n"
+                "📞 <b>Support:</b>\n"
+                "• Telegram: @makker_o"
+            )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+            ]
+        ])
+        
+        await callback.message.edit_text(
+            shop_closed_message,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return
+    
+    logger.info(f"User {user.telegram_id} clicked Fragment Stars button")
+    
+    # Create keyboard with stars options
+    keyboard_buttons = []
+    
+    # Get stars pricing from database
+    try:
+        from bot.database.connection import get_connection
+        from bot.database.repository import StarsPricingRepository
+        
+        pool = await get_connection(config.database_url)
+        pricing_repo = StarsPricingRepository(pool)
+        all_pricing = await pricing_repo.get_all_pricing()
+        
+        logger.info(f"Loaded stars pricing from database: {len(all_pricing)} items")
+        for p in all_pricing:
+            logger.info(f"Stars pricing: {p.stars_count} stars - ${p.price_usd}, active: {p.is_active}")
+        
+        # Filter only active pricing
+        active_pricing = [p for p in all_pricing if p.is_active]
+        logger.info(f"Active stars pricing: {len(active_pricing)} items")
+        
+        for pricing in active_pricing:
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    text=f"{pricing.stars_count} stars - ${pricing.price_usd}", 
+                    callback_data=f"fragment_stars_{pricing.stars_count}"
+                )
+            ])
+    except Exception as e:
+        logger.error(f"Error loading stars pricing from database: {e}")
+        # Fallback to hardcoded prices
+        keyboard_buttons = [
+            [InlineKeyboardButton(text="50 stars - $1.00", callback_data="fragment_stars_50")],
+            [InlineKeyboardButton(text="100 stars - $1.50", callback_data="fragment_stars_100")],
+            [InlineKeyboardButton(text="200 stars - $2.50", callback_data="fragment_stars_200")],
+            [InlineKeyboardButton(text="500 stars - $5.00", callback_data="fragment_stars_500")]
+        ]
+    
+    # Add main menu button
+    keyboard_buttons.append([
+        InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+    ])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+    
+    await callback.message.edit_text(
+        get_text("fragment_select_stars", user.language) + "\n\n💡 <b>Или введите количество звезд вручную:</b>",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    
+    # Set state to wait for stars count input
+    await state.set_state(FragmentStates.waiting_for_stars_count)
+    logger.info(f"Set FSM state to {FragmentStates.waiting_for_stars_count}")
+    logger.info("Showed stars selection keyboard to user")
+
+
 @router.callback_query(F.data.startswith("fragment_months_"))
 async def fragment_months_callback(callback: CallbackQuery, state: FSMContext):
     """Handle Fragment months selection"""
@@ -1717,6 +2476,49 @@ async def fragment_months_callback(callback: CallbackQuery, state: FSMContext):
     user = await user_repo.get_user_by_telegram_id(callback.from_user.id)
     if not user:
         await callback.answer("Ошибка: пользователь не найден")
+        return
+    
+    # Check shop status first
+    from bot.database import ShopSettingsRepository
+    shop_repo = ShopSettingsRepository(config.database_url)
+    is_shop_open = await shop_repo.is_shop_open()
+    
+    if not is_shop_open:
+        # Get maintenance message
+        maintenance_message = await shop_repo.get_maintenance_message()
+        
+        if user.language == "ru":
+            shop_closed_message = (
+                "⏳ <b>Продажа временно приостановлена</b>\n\n"
+                f"{maintenance_message}\n\n"
+                "💡 <b>Что делать:</b>\n"
+                "• Попробуйте позже\n"
+                "• Следите за обновлениями\n\n"
+                "📞 <b>Поддержка:</b>\n"
+                "• Telegram: @makker_o"
+            )
+        else:
+            shop_closed_message = (
+                "⏳ <b>Sales temporarily suspended</b>\n\n"
+                f"{maintenance_message}\n\n"
+                "💡 <b>What to do:</b>\n"
+                "• Try again later\n"
+                "• Follow updates\n\n"
+                "📞 <b>Support:</b>\n"
+                "• Telegram: @makker_o"
+            )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+            ]
+        ])
+        
+        await callback.message.edit_text(
+            shop_closed_message,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
         return
     
     months = int(callback.data.replace("fragment_months_", ""))
@@ -1733,101 +2535,172 @@ async def fragment_months_callback(callback: CallbackQuery, state: FSMContext):
         
         # Get user balance
         user_balance = await balance_repo.get_user_balance(user.id)
-        current_balance = user_balance.balance_usd if user_balance else 0.0
+        current_balance = user_balance.get('balance_usd', 0.0) if user_balance else 0.0
         
         # Get price for selected months
         pricing = await pricing_repo.get_pricing_by_months(months)
-        if pricing and pricing.is_active:
+        if pricing and pricing.is_active and pricing.price_usd > 0:
             required_amount = pricing.price_usd
         else:
             # Fallback to hardcoded prices
             fallback_prices = {3: 12.99, 9: 29.99, 12: 39.99}
             required_amount = fallback_prices.get(months, 12.99)
         
+        # Ensure required_amount is valid
+        if required_amount <= 0:
+            logger.error(f"Invalid required_amount: {required_amount}, using fallback")
+            fallback_prices = {3: 12.99, 9: 29.99, 12: 39.99}
+            required_amount = fallback_prices.get(months, 12.99)
+        
         logger.info(f"User {user.id} balance: ${current_balance}, required for {months} months: ${required_amount}")
         
-        # Check if user has enough balance
-        if current_balance < required_amount:
-            # Get all available pricing for display
-            all_pricing_display = []
-            for pricing in active_pricing:
-                if pricing.is_active:
-                    all_pricing_display.append(f"• {pricing.months} месяцев - <b>${pricing.price_usd:.2f}</b>")
-            
-            if not all_pricing_display:
-                # Fallback to hardcoded prices
-                all_pricing_display = [
-                    "• 3 месяца - <b>$12.99</b>",
-                    "• 9 месяцев - <b>$29.99</b>", 
-                    "• 12 месяцев - <b>$39.99</b>"
-                ]
-            
-            if user.language == "ru":
-                insufficient_message = (
-                    f"💰 <b>Недостаточно средств для {months} месяцев!</b>\n\n"
-                    f"Ваш текущий баланс: <b>${current_balance:.2f}</b>\n"
-                    f"Стоимость подписки: <b>${required_amount:.2f}</b>\n"
-                    f"Не хватает: <b>${required_amount - current_balance:.2f}</b>\n\n"
-                    f"📋 <b>Все доступные тарифы:</b>\n"
-                    f"{chr(10).join(all_pricing_display)}\n\n"
-                    f"💡 <b>Варианты решения:</b>\n"
-                    f"• Оплатить подписку напрямую (рекомендуется)\n"
-                    f"• Пополнить баланс на недостающую сумму\n\n"
-                    f"🚀 <b>Оплатить подписку {months} месяцев за ${required_amount:.2f}</b>"
-                )
-            else:
-                insufficient_message = (
-                    f"💰 <b>Insufficient funds for {months} months!</b>\n\n"
-                    f"Your current balance: <b>${current_balance:.2f}</b>\n"
-                    f"Subscription cost: <b>${required_amount:.2f}</b>\n"
-                    f"Missing amount: <b>${required_amount - current_balance:.2f}</b>\n\n"
-                    f"📋 <b>All available plans:</b>\n"
-                    f"{chr(10).join(all_pricing_display)}\n\n"
-                    f"💡 <b>Solution options:</b>\n"
-                    f"• Pay for subscription directly (recommended)\n"
-                    f"• Top up balance for missing amount\n\n"
-                    f"🚀 <b>Pay for {months} months subscription - ${required_amount:.2f}</b>"
-                )
-            
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=f"🚀 Оплатить {months} месяцев - ${required_amount:.2f}", 
-                        callback_data=f"direct_payment_{months}_{required_amount}"
-                    )
-                ],
-                [
-                    InlineKeyboardButton(text="💰 Пополнить баланс", callback_data="deposit_balance")
-                ],
-                [
-                    InlineKeyboardButton(text="🔙 Назад к периодам", callback_data="fragment_premium")
-                ],
-                [
-                    InlineKeyboardButton(text="👤 Профиль", callback_data="profile")
-                ],
-                [
-                    InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
-                ]
-            ])
-            
-            await callback.message.edit_text(
-                insufficient_message,
-                reply_markup=keyboard,
-                parse_mode="HTML"
-            )
-            return
+        # Store balance info in state for later use
+        await state.update_data(
+            user_balance=current_balance,
+            required_amount=required_amount,
+            has_sufficient_balance=(current_balance >= required_amount)
+        )
         
-        # User has enough balance, continue with username input
-        logger.info(f"User {user.id} has sufficient balance (${current_balance}) for {months} months (${required_amount})")
+        logger.info(f"User {user.id} balance: ${current_balance}, required: ${required_amount}, sufficient: {current_balance >= required_amount}")
+        
+        # Store months in state
+        await state.update_data(fragment_months=months)
+        logger.info(f"Stored {months} months in FSM state")
         
     except Exception as e:
         logger.error(f"Error checking user balance for {months} months: {e}")
         # Continue with username input even if balance check fails
         await callback.answer("⚠️ Ошибка проверки баланса, но можно продолжить")
+        
+        # Store months in state even if balance check fails
+        await state.update_data(fragment_months=months)
+        logger.info(f"Stored {months} months in FSM state after balance check error")
     
-    # Store months in state
-    await state.update_data(fragment_months=months)
-    logger.info(f"Stored {months} months in FSM state")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+        ]
+    ])
+    
+    await callback.message.edit_text(
+        get_text("fragment_enter_username", user.language),
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    
+    # Set state to wait for username
+    await state.set_state(FragmentStates.waiting_for_username)
+    logger.info(f"Set FSM state to {FragmentStates.waiting_for_username}")
+
+
+@router.callback_query(F.data.startswith("fragment_stars_"))
+async def fragment_stars_count_callback(callback: CallbackQuery, state: FSMContext):
+    """Handle Fragment stars count selection"""
+    config = Config()
+    user_repo = UserRepository(config.database_url)
+    
+    user = await user_repo.get_user_by_telegram_id(callback.from_user.id)
+    if not user:
+        await callback.answer("Ошибка: пользователь не найден")
+        return
+    
+    # Check shop status first
+    from bot.database import ShopSettingsRepository
+    shop_repo = ShopSettingsRepository(config.database_url)
+    is_shop_open = await shop_repo.is_shop_open()
+    
+    if not is_shop_open:
+        # Get maintenance message
+        maintenance_message = await shop_repo.get_maintenance_message()
+        
+        if user.language == "ru":
+            shop_closed_message = (
+                "⏳ <b>Продажа временно приостановлена</b>\n\n"
+                f"{maintenance_message}\n\n"
+                "💡 <b>Что делать:</b>\n"
+                "• Попробуйте позже\n"
+                "• Следите за обновлениями\n\n"
+                "📞 <b>Поддержка:</b>\n"
+                "• Telegram: @makker_o"
+            )
+        else:
+            shop_closed_message = (
+                "⏳ <b>Sales temporarily suspended</b>\n\n"
+                f"{maintenance_message}\n\n"
+                "💡 <b>What to do:</b>\n"
+                "• Try again later\n"
+                "• Follow updates\n\n"
+                "📞 <b>Support:</b>\n"
+                "• Telegram: @makker_o"
+            )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+            ]
+        ])
+        
+        await callback.message.edit_text(
+            shop_closed_message,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return
+    
+    stars_count = int(callback.data.replace("fragment_stars_", ""))
+    logger.info(f"User {user.telegram_id} selected {stars_count} stars for Fragment Stars")
+    
+    # Check user balance for selected stars
+    try:
+        from bot.database.connection import get_connection
+        from bot.database.repository import UserBalanceRepository, StarsPricingRepository
+        
+        pool = await get_connection(config.database_url)
+        balance_repo = UserBalanceRepository(pool)
+        pricing_repo = StarsPricingRepository(pool)
+        
+        # Get user balance
+        user_balance = await balance_repo.get_user_balance(user.id)
+        current_balance = user_balance.get('balance_usd', 0.0) if user_balance else 0.0
+        
+        # Get price for selected stars
+        pricing = await pricing_repo.get_pricing_by_stars(stars_count)
+        if pricing and pricing.is_active and pricing.price_usd > 0:
+            required_amount = pricing.price_usd
+        else:
+            # Fallback to hardcoded prices
+            fallback_prices = {50: 1.00, 100: 1.50, 200: 2.50, 500: 5.00}
+            required_amount = fallback_prices.get(stars_count, 1.00)
+        
+        # Ensure required_amount is valid
+        if required_amount <= 0:
+            logger.error(f"Invalid required_amount: {required_amount}, using fallback")
+            fallback_prices = {50: 1.00, 100: 1.50, 200: 2.50, 500: 5.00}
+            required_amount = fallback_prices.get(stars_count, 1.00)
+        
+        logger.info(f"User {user.id} balance: ${current_balance}, required for {stars_count} stars: ${required_amount}")
+        
+        # Store balance info in state for later use
+        await state.update_data(
+            user_balance=current_balance,
+            required_amount=required_amount,
+            has_sufficient_balance=(current_balance >= required_amount)
+        )
+        
+        logger.info(f"User {user.id} balance: ${current_balance}, required: ${required_amount}, sufficient: {current_balance >= required_amount}")
+        
+        # Store stars count in state
+        await state.update_data(fragment_stars_count=stars_count)
+        logger.info(f"Stored {stars_count} stars in FSM state")
+        
+    except Exception as e:
+        logger.error(f"Error checking user balance for {stars_count} stars: {e}")
+        # Continue with username input even if balance check fails
+        await callback.answer("⚠️ Ошибка проверки баланса, но можно продолжить")
+        
+        # Store stars count in state even if balance check fails
+        await state.update_data(fragment_stars_count=stars_count)
+        logger.info(f"Stored {stars_count} stars in FSM state after balance check error")
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -1855,6 +2728,49 @@ async def direct_payment_callback(callback: CallbackQuery, state: FSMContext):
     user = await user_repo.get_user_by_telegram_id(callback.from_user.id)
     if not user:
         await callback.answer("Ошибка: пользователь не найден")
+        return
+    
+    # Check shop status first
+    from bot.database import ShopSettingsRepository
+    shop_repo = ShopSettingsRepository(config.database_url)
+    is_shop_open = await shop_repo.is_shop_open()
+    
+    if not is_shop_open:
+        # Get maintenance message
+        maintenance_message = await shop_repo.get_maintenance_message()
+        
+        if user.language == "ru":
+            shop_closed_message = (
+                "⏳ <b>Продажа временно приостановлена</b>\n\n"
+                f"{maintenance_message}\n\n"
+                "💡 <b>Что делать:</b>\n"
+                "• Попробуйте позже\n"
+                "• Следите за обновлениями\n\n"
+                "📞 <b>Поддержка:</b>\n"
+                "• Telegram: @makker_o"
+            )
+        else:
+            shop_closed_message = (
+                "⏳ <b>Sales temporarily suspended</b>\n\n"
+                f"{maintenance_message}\n\n"
+                "💡 <b>What to do:</b>\n"
+                "• Try again later\n"
+                "• Follow updates\n\n"
+                "📞 <b>Support:</b>\n"
+                "• Telegram: @makker_o"
+            )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text=get_text("btn_main_menu", user.language), callback_data="main_menu")
+            ]
+        ])
+        
+        await callback.message.edit_text(
+            shop_closed_message,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
         return
     
     # Parse callback data: direct_payment_{months}_{amount}

@@ -79,6 +79,35 @@ async def update_database():
         
         print("✅ Premium pricing table created/updated")
         
+        # Create stars_pricing table
+        await conn.execute("DROP TABLE IF EXISTS stars_pricing")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS stars_pricing (
+                id SERIAL PRIMARY KEY,
+                stars_count INTEGER NOT NULL UNIQUE,
+                price_usd DECIMAL(10,2) NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
+        
+        # Insert default pricing if table is empty
+        await conn.execute("SELECT COUNT(*) FROM stars_pricing")
+        count = await conn.fetchrow("SELECT COUNT(*) FROM stars_pricing")
+        
+        if count[0] == 0:
+            await conn.execute("""
+                INSERT INTO stars_pricing (stars_count, price_usd) VALUES 
+                    (50, 1.00),
+                    (100, 1.50),
+                    (200, 2.50),
+                    (500, 5.00)
+            """)
+            print("✅ Default stars pricing inserted")
+        
+        print("✅ Stars pricing table created/updated")
+        
         # Create user_balance table
         await conn.execute("DROP TABLE IF EXISTS user_balance")
         await conn.execute("""

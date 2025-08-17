@@ -165,6 +165,9 @@ class BackgroundTaskManager:
                 if invoice.payload and "premium_" in invoice.payload:
                     # This is a subscription payment - create Fragment order
                     await self._process_subscription_payment(invoice)
+                elif invoice.payload and "stars_" in invoice.payload:
+                    # This is a stars payment - create Fragment order
+                    await self._process_stars_payment(invoice)
                 else:
                     # Regular balance top-up
                     success = await balance_repo.add_to_balance(
@@ -239,6 +242,54 @@ class BackgroundTaskManager:
                 
         except Exception as e:
             logger.error(f"Error processing subscription payment: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    async def _process_stars_payment(self, invoice):
+        """Process stars payment - create Fragment order"""
+        try:
+            logger.info(f"Processing stars payment for invoice {invoice.invoice_id}")
+            
+            # Parse payload: user_{user_id}_stars_{stars_count}_{username}
+            payload_parts = invoice.payload.split("_")
+            if len(payload_parts) >= 4:
+                user_id = int(payload_parts[1])
+                stars_count = int(payload_parts[3])
+                username = payload_parts[4]
+                
+                logger.info(f"Creating Fragment stars order: {stars_count} stars for @{username}")
+                
+                # Get config and create Fragment API instance
+                config = self._get_config()
+                from bot.fragment_api import FragmentAPI
+                
+                fragment_api = FragmentAPI(
+                    token=config.token_fragment,
+                    demo_mode=not bool(config.token_fragment and config.token_fragment.strip())
+                )
+                
+                # Create Fragment order
+                order, error_info = await fragment_api.create_stars_order(username, stars_count, show_sender=False)
+                
+                if order:
+                    logger.info(f"Fragment stars order created successfully: {order.id}")
+                    
+                    # Send success notification to user
+                    await self._send_stars_success_notification(invoice, order, stars_count, username)
+                    
+                    # Notify admins
+                    await self._notify_admins_stars_created(invoice, order, stars_count, username)
+                    
+                else:
+                    logger.error(f"Failed to create Fragment stars order: {error_info}")
+                    # Send error notification to user
+                    await self._send_stars_error_notification(invoice, error_info, stars_count, username)
+                    
+            else:
+                logger.error(f"Invalid payload format for stars invoice: {invoice.payload}")
+                
+        except Exception as e:
+            logger.error(f"Error processing stars payment: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
     
@@ -360,6 +411,135 @@ class BackgroundTaskManager:
         except Exception as e:
             logger.error(f"Error in subscription error notification: {e}")
     
+    async def _send_stars_success_notification(self, invoice, order, stars_count, username):
+        """Send stars success notification to user"""
+        try:
+            if not self.bot:
+                logger.warning("Bot instance not available, cannot send notification")
+                return
+            
+            message_text = (
+                f"🎉 **Telegram Stars отправлены!**\n\n"
+                f"✅ Stars успешно отправлены\n"
+                f"⭐ **Количество:** {stars_count} stars\n"
+                f"👤 **Для аккаунта:** @{username}\n"
+                f"💰 **Сумма:** ${invoice.amount_usd:.2f}\n"
+                f"🆔 **ID заказа:** {order.id}\n\n"
+                f"🎊 **Наслаждайтесь Stars!**\n\n"
+                f"💡 **Что дальше:**\n"
+                f"• Stars активны в Telegram\n"
+                f"• Все Stars функции доступны\n"
+                f"• Stars не имеют срока действия"
+            )
+            
+            try:
+                # Try to send to user_id first, then try to get telegram_id from database
+                chat_id = invoice.user_id
+                
+                # Check if we can send message to this user
+                try:
+                    await self.bot.send_chat_action(chat_id=chat_id, action="typing")
+                except Exception:
+                    # If user_id doesn't work, try to get telegram_id from database
+                    logger.warning(f"Cannot send to user_id {chat_id}, trying to get telegram_id from database")
+                    
+                    try:
+                        from bot.database.connection import get_connection as get_db_connection
+                        pool = get_db_connection(config.database_url)
+                        async with pool.acquire() as conn:
+                            result = await conn.fetchrow(
+                                "SELECT telegram_id FROM users WHERE id = $1",
+                                invoice.user_id
+                            )
+                            if result and result['telegram_id']:
+                                chat_id = result['telegram_id']
+                                logger.info(f"Using telegram_id {chat_id} from database for user {invoice.user_id}")
+                    except Exception as db_error:
+                        logger.error(f"Failed to get telegram_id from database: {db_error}")
+                        return
+                
+                await self.bot.send_message(
+                    chat_id=chat_id,
+                    text=message_text,
+                    parse_mode="Markdown"
+                )
+                
+                logger.info(f"Stars success notification sent to user {invoice.user_id}")
+                
+            except Exception as e:
+                logger.error(f"Error sending stars success notification: {e}")
+                
+        except Exception as e:
+            logger.error(f"Error sending stars success notification: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    async def _send_stars_error_notification(self, invoice, error_info, stars_count, username):
+        """Send stars error notification to user"""
+        try:
+            if not self.bot:
+                logger.warning("Bot instance not available, cannot send notification")
+                return
+            
+            error_message = "Неизвестная ошибка"
+            if error_info and "message" in error_info:
+                error_message = error_info["message"]
+            
+            message_text = (
+                f"❌ **Ошибка при отправке Stars**\n\n"
+                f"⚠️ Не удалось отправить Stars\n"
+                f"⭐ **Количество:** {stars_count} stars\n"
+                f"👤 **Для аккаунта:** @{username}\n"
+                f"💰 **Сумма:** ${invoice.amount_usd:.2f}\n"
+                f"🚫 **Ошибка:** {error_message}\n\n"
+                f"💡 **Что делать:**\n"
+                f"• Обратитесь в поддержку\n"
+                f"• Укажите ID заказа\n"
+                f"• Мы решим проблему"
+            )
+            
+            try:
+                # Try to send to user_id first, then try to get telegram_id from database
+                chat_id = invoice.user_id
+                
+                # Check if we can send message to this user
+                try:
+                    await self.bot.send_chat_action(chat_id=chat_id, action="typing")
+                except Exception:
+                    # If user_id doesn't work, try to get telegram_id from database
+                    logger.warning(f"Cannot send to user_id {chat_id}, trying to get telegram_id from database")
+                    
+                    try:
+                        from bot.database.connection import get_connection as get_db_connection
+                        pool = get_db_connection(config.database_url)
+                        async with pool.acquire() as conn:
+                            result = await conn.fetchrow(
+                                "SELECT telegram_id FROM users WHERE id = $1",
+                                invoice.user_id
+                            )
+                            if result and result['telegram_id']:
+                                chat_id = result['telegram_id']
+                                logger.info(f"Using telegram_id {chat_id} from database for user {invoice.user_id}")
+                    except Exception as db_error:
+                        logger.error(f"Failed to get telegram_id from database: {db_error}")
+                        return
+                
+                await self.bot.send_message(
+                    chat_id=chat_id,
+                    text=message_text,
+                    parse_mode="Markdown"
+                )
+                
+                logger.info(f"Stars error notification sent to user {invoice.user_id}")
+                
+            except Exception as e:
+                logger.error(f"Error sending stars error notification: {e}")
+                
+        except Exception as e:
+            logger.error(f"Error sending stars error notification: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
     async def _notify_admins_subscription_created(self, invoice, order, months, username):
         """Notify admins about successful subscription creation"""
         try:
@@ -393,6 +573,40 @@ class BackgroundTaskManager:
                     
         except Exception as e:
             logger.error(f"Error notifying admins: {e}")
+    
+    async def _notify_admins_stars_created(self, invoice, order, stars_count, username):
+        """Notify admins about successful stars creation"""
+        try:
+            if not self.bot:
+                return
+            
+            config = self._get_config()
+            if not config.admin_ids:
+                return
+            
+            admin_message = (
+                f"🎉 **Новые Stars отправлены!**\n\n"
+                f"👤 **Пользователь:** {invoice.user_id}\n"
+                f"⭐ **Количество:** {stars_count} stars\n"
+                f"👤 **Для аккаунта:** @{username}\n"
+                f"💰 **Сумма:** ${invoice.amount_usd:.2f}\n"
+                f"🆔 **Fragment ID:** {order.id}\n"
+                f"💳 **Счет:** {invoice.invoice_id}\n"
+                f"⏰ **Время:** {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            )
+            
+            for admin_id in config.admin_ids:
+                try:
+                    await self.bot.send_message(
+                        chat_id=admin_id,
+                        text=admin_message,
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin_id}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Error notifying admins about stars: {e}")
     
     async def _send_payment_success_notification(self, invoice, amount_usd):
         """Send payment success notification to user"""
