@@ -2,6 +2,7 @@ import asyncio
 import logging
 import signal
 import sys
+from datetime import datetime
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
@@ -26,59 +27,78 @@ logger = logging.getLogger(__name__)
 # Global variables for graceful shutdown
 bot_instance = None
 dispatcher_instance = None
+start_time = None
 
 
-async def notify_admins(bot: Bot, message: str):
-    """Send notification to all admins"""
-    config = Config()
-    if not config.admin_ids:
-        logger.warning("No admin IDs configured")
-        return
-    
-    for admin_id in config.admin_ids:
-        try:
-            await bot.send_message(admin_id, message, parse_mode="HTML")
-            logger.info(f"Notification sent to admin {admin_id}")
-        except Exception as e:
-            logger.error(f"Failed to send notification to admin {admin_id}: {e}")
+async def delete_webhook(bot: Bot):
+    """Delete webhook to enable long polling"""
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Webhook deleted successfully")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to delete webhook: {e}")
+        return False
 
 
 async def on_startup(bot: Bot):
     """Actions to perform on bot startup"""
-    logger.info("Bot is starting up...")
+    global start_time
+    start_time = datetime.now()
     
-    # Check Fragment API configuration
-    config = Config()
-    if config.token_fragment and config.token_fragment.strip():
-        logger.info(f"Fragment API: Real API configured with token (length: {len(config.token_fragment)})")
-        fragment_status = "✅ Реальный Fragment API"
-    else:
-        logger.warning("Fragment API: No token configured, will use demo mode")
-        fragment_status = "⚠️ Демо-режим Fragment API"
+    logger.info("🚀 Bot is starting up...")
     
-    # Send startup notification to admins
-    startup_message = f"🚀 <b>Бот запущен!</b>\n\n✅ Все системы работают\n📊 Бот готов к работе\n🔑 Fragment API: {fragment_status}\n⏰ Время запуска: {asyncio.get_event_loop().time()}"
-    
-    await notify_admins(bot, startup_message)
-    logger.info("Startup notifications sent to admins")
+    try:
+        # Delete webhook first
+        webhook_deleted = await delete_webhook(bot)
+        if not webhook_deleted:
+            logger.warning("⚠️ Webhook deletion failed, but continuing...")
+        
+        # Check Fragment API configuration
+        config = Config()
+        if config.token_fragment and config.token_fragment.strip():
+            logger.info(f"Fragment API: Real API configured with token (length: {len(config.token_fragment)})")
+        else:
+            logger.warning("Fragment API: No token configured, will use demo mode")
+        
+        # Check database connection
+        try:
+            await create_tables()
+            logger.info("✅ Database tables created/verified")
+        except Exception as e:
+            logger.error(f"Database connection failed: {e}")
+        
+        logger.info("✅ Bot startup completed")
+        
+    except Exception as e:
+        logger.error(f"Error during startup: {e}")
 
 
 async def on_shutdown(bot: Bot):
     """Actions to perform on bot shutdown"""
-    logger.info("Bot is shutting down...")
+    global start_time
     
-    # Send shutdown notification to admins
-    shutdown_message = "🛑 <b>Бот остановлен!</b>\n\n⚠️ Бот завершает работу\n⏰ Время остановки: {time}".format(
-        time=asyncio.get_event_loop().time()
-    )
+    logger.info("🛑 Bot is shutting down...")
     
-    await notify_admins(bot, shutdown_message)
-    logger.info("Shutdown notifications sent to admins")
+    try:
+        # Calculate uptime
+        if start_time:
+            uptime_delta = datetime.now() - start_time
+            hours = uptime_delta.seconds // 3600
+            minutes = (uptime_delta.seconds % 3600) // 60
+            seconds = uptime_delta.seconds % 60
+            logger.info(f"⏱️ Bot uptime: {hours:02d}:{minutes:02d}:{seconds:02d}")
+        
+        logger.info("✅ Bot shutdown completed")
+        
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}")
 
 
 def signal_handler(signum, frame):
     """Handle system signals for graceful shutdown"""
-    logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+    signal_name = "SIGINT" if signum == signal.SIGINT else "SIGTERM"
+    logger.info(f"📡 Received signal {signal_name} ({signum}), initiating graceful shutdown...")
     
     if bot_instance and dispatcher_instance:
         # Schedule shutdown
@@ -89,65 +109,98 @@ def signal_handler(signum, frame):
 
 async def graceful_shutdown():
     """Gracefully shutdown the bot"""
-    logger.info("Performing graceful shutdown...")
+    logger.info("🔄 Performing graceful shutdown...")
     
-    if dispatcher_instance:
-        await dispatcher_instance.stop_polling()
-    
-    if bot_instance:
-        await bot_instance.session.close()
-    
-    logger.info("Graceful shutdown completed")
-    sys.exit(0)
+    try:
+        if dispatcher_instance:
+            await dispatcher_instance.stop_polling()
+            logger.info("✅ Dispatcher stopped")
+        
+        if bot_instance:
+            await bot_instance.session.close()
+            logger.info("✅ Bot session closed")
+        
+        logger.info("✅ Graceful shutdown completed")
+        
+    except Exception as e:
+        logger.error(f"❌ Error during graceful shutdown: {e}")
+    finally:
+        sys.exit(0)
 
 
 async def main():
     """Main function to start the bot"""
     global bot_instance, dispatcher_instance
     
-    # Load configuration
-    config = Config()
-    
-    # Initialize bot and dispatcher
-    bot = Bot(token=config.bot_token)
-    storage = MemoryStorage()
-    dp = Dispatcher(storage=storage)
-    
-    # Store global references
-    bot_instance = bot
-    dispatcher_instance = dp
-    
-    # Setup middlewares
-    setup_middlewares(dp)
-    
-    # Register handlers
-    register_handlers(dp)
-    
-    # Create database tables
-    await create_tables()
-
-    # Start background tasks
-    await start_background_tasks(bot)
-    
-    # Setup signal handlers
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Start polling with startup/shutdown handlers
-    logger.info("Starting bot...")
     try:
+        # Load configuration
+        config = Config()
+        logger.info("✅ Configuration loaded successfully")
+        
+        # Initialize bot and dispatcher
+        bot = Bot(token=config.bot_token)
+        storage = MemoryStorage()
+        dp = Dispatcher(storage=storage)
+        
+        # Store global references
+        bot_instance = bot
+        dispatcher_instance = dp
+        
+        logger.info("✅ Bot and dispatcher initialized")
+        
+        # Setup middlewares
+        setup_middlewares(dp)
+        logger.info("✅ Middlewares setup completed")
+        
+        # Register handlers
+        register_handlers(dp)
+        logger.info("✅ Handlers registered")
+        
+        # Create database tables
+        await create_tables()
+        logger.info("✅ Database tables created/verified")
+        
+        # Start background tasks
+        await start_background_tasks(bot)
+        logger.info("✅ Background tasks started")
+        
+        # Setup signal handlers
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        logger.info("✅ Signal handlers configured")
+        
+        # Start polling with startup/shutdown handlers
+        logger.info("🚀 Starting bot polling...")
+        
         await dp.start_polling(
             bot,
             on_startup=on_startup,
             on_shutdown=on_shutdown
         )
+        
     except Exception as e:
-        logger.error(f"Error during bot operation: {e}")
-        await notify_admins(bot, f"❌ <b>Ошибка бота!</b>\n\n🚨 Произошла ошибка: {e}")
+        logger.error(f"Critical error during bot operation: {e}")
+        raise e
+        
     finally:
-        await bot.session.close()
-        await stop_background_tasks()
+        # Cleanup
+        try:
+            if bot_instance:
+                await bot_instance.session.close()
+                logger.info("✅ Bot session closed in finally block")
+            
+            await stop_background_tasks()
+            logger.info("✅ Background tasks stopped")
+            
+        except Exception as e:
+            logger.error(f"❌ Error during cleanup: {e}")
 
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("🛑 Bot stopped by user (Ctrl+C)")
+    except Exception as e:
+        logger.error(f"❌ Fatal error: {e}")
+        sys.exit(1) 

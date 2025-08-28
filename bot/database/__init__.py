@@ -1,6 +1,17 @@
-from .connection import get_db_manager, DatabaseManager
-from .repository import UserRepository, ChatRepository, MessageRepository, CategoryRepository, SubcategoryRepository, ProductRepository, OrderRepository, ShopSettingsRepository, UserBalanceRepository
-from .models import User, Chat, Message, Category, Subcategory, Product, Order
+"""
+Database module for CosmicPerks bot
+"""
+
+from .connection import get_connection, get_db_manager
+from .models import User, Chat, Message, PremiumPricing, UserBalance, CryptoPayInvoice
+from .repository import (
+    UserRepository, 
+    ChatRepository, 
+    MessageRepository, 
+    PremiumPricingRepository,
+    UserBalanceRepository,
+    CryptoPayInvoiceRepository
+)
 
 async def create_tables():
     """Create database tables"""
@@ -22,23 +33,19 @@ async def create_tables():
         await conn.execute(schema)
 
 __all__ = [
+    'get_connection',
     'get_db_manager',
-    'DatabaseManager', 
-    'UserRepository',
-    'ChatRepository',
-    'MessageRepository',
-    'CategoryRepository',
-    'SubcategoryRepository',
-    'ProductRepository',
-    'OrderRepository',
-    'ShopSettingsRepository',
-    'UserBalanceRepository',
     'User',
     'Chat', 
     'Message',
-    'Category',
-    'Subcategory',
-    'Product',
-    'Order',
+    'PremiumPricing',
+    'UserBalance',
+    'CryptoPayInvoice',
+    'UserRepository',
+    'ChatRepository',
+    'MessageRepository',
+    'PremiumPricingRepository',
+    'UserBalanceRepository',
+    'CryptoPayInvoiceRepository',
     'create_tables'
 ] 

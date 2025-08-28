@@ -34,67 +34,6 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Categories table
-CREATE TABLE IF NOT EXISTS categories (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    name_en VARCHAR(255) NOT NULL,
-    description TEXT,
-    description_en TEXT,
-    icon VARCHAR(10) DEFAULT '📦',
-    sort_order INTEGER DEFAULT 0,
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- Subcategories table
-CREATE TABLE IF NOT EXISTS subcategories (
-    id SERIAL PRIMARY KEY,
-    category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
-    name VARCHAR(255) NOT NULL,
-    name_en VARCHAR(255) NOT NULL,
-    description TEXT,
-    description_en TEXT,
-    icon VARCHAR(10) DEFAULT '📦',
-    sort_order INTEGER DEFAULT 0,
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- Products table
-CREATE TABLE IF NOT EXISTS products (
-    id SERIAL PRIMARY KEY,
-    category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
-    subcategory_id INTEGER REFERENCES subcategories(id) ON DELETE SET NULL,
-    name VARCHAR(255) NOT NULL,
-    name_en VARCHAR(255) NOT NULL,
-    description TEXT NOT NULL,
-    description_en TEXT NOT NULL,
-    price DECIMAL(10,2) NOT NULL, -- Price in USD
-    currency VARCHAR(10) DEFAULT 'USD',
-    image_url TEXT,
-    is_active BOOLEAN DEFAULT TRUE,
-    sort_order INTEGER DEFAULT 0,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- Orders table
-CREATE TABLE IF NOT EXISTS orders (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-    product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
-    quantity INTEGER DEFAULT 1,
-    total_price DECIMAL(10,2) DEFAULT 0.0,
-    currency VARCHAR(10) DEFAULT 'USD',
-    status VARCHAR(50) DEFAULT 'pending', -- pending, paid, completed, cancelled
-    payment_method VARCHAR(100),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
 -- Indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
 CREATE INDEX IF NOT EXISTS idx_chats_telegram_id ON chats(telegram_id);
@@ -102,16 +41,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_telegram_id ON messages(telegram_id);
 CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
 CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
-CREATE INDEX IF NOT EXISTS idx_categories_sort_order ON categories(sort_order);
-CREATE INDEX IF NOT EXISTS idx_subcategories_category_id ON subcategories(category_id);
-CREATE INDEX IF NOT EXISTS idx_subcategories_sort_order ON subcategories(sort_order);
-CREATE INDEX IF NOT EXISTS idx_products_category_id ON products(category_id);
-CREATE INDEX IF NOT EXISTS idx_products_subcategory_id ON products(subcategory_id);
-CREATE INDEX IF NOT EXISTS idx_products_sort_order ON products(sort_order);
-CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
-CREATE INDEX IF NOT EXISTS idx_orders_product_id ON orders(product_id);
-CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
-CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at); 
 
 -- Telegram Premium Pricing table
 CREATE TABLE IF NOT EXISTS premium_pricing (
@@ -156,19 +85,3 @@ CREATE TABLE IF NOT EXISTS crypto_pay_invoices (
     paid_at TIMESTAMP WITH TIME ZONE,
     expires_at TIMESTAMP WITH TIME ZONE
 ); 
-
--- Shop Settings table
-CREATE TABLE IF NOT EXISTS shop_settings (
-    id SERIAL PRIMARY KEY,
-    key VARCHAR(100) UNIQUE NOT NULL,
-    value TEXT NOT NULL,
-    description TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- Insert default shop settings
-INSERT INTO shop_settings (key, value, description) VALUES 
-    ('shop_open', 'true', 'Whether the shop is open for sales'),
-    ('maintenance_message', 'Магазин временно закрыт на техническое обслуживание', 'Message shown when shop is closed')
-ON CONFLICT (key) DO NOTHING; 

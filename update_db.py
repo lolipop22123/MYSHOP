@@ -40,17 +40,6 @@ async def update_database():
         except Exception as e:
             print(f"❌ Error adding language column: {e}")
         
-        # Add any other missing columns
-        try:
-            # Check if messages table has correct column order
-            await conn.execute("""
-                ALTER TABLE messages 
-                ALTER COLUMN text TYPE TEXT
-            """)
-            print("✅ Updated messages table")
-        except Exception as e:
-            print(f"❌ Error updating messages table: {e}")
-        
         # Create premium_pricing table
         await conn.execute("DROP TABLE IF EXISTS premium_pricing")
         await conn.execute("""
@@ -65,7 +54,6 @@ async def update_database():
         """)
         
         # Insert default pricing if table is empty
-        await conn.execute("SELECT COUNT(*) FROM premium_pricing")
         count = await conn.fetchrow("SELECT COUNT(*) FROM premium_pricing")
         
         if count[0] == 0:
@@ -78,35 +66,6 @@ async def update_database():
             print("✅ Default premium pricing inserted")
         
         print("✅ Premium pricing table created/updated")
-        
-        # Create stars_pricing table
-        await conn.execute("DROP TABLE IF EXISTS stars_pricing")
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS stars_pricing (
-                id SERIAL PRIMARY KEY,
-                stars_count INTEGER NOT NULL UNIQUE,
-                price_usd DECIMAL(10,2) NOT NULL,
-                is_active BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-            )
-        """)
-        
-        # Insert default pricing if table is empty
-        await conn.execute("SELECT COUNT(*) FROM stars_pricing")
-        count = await conn.fetchrow("SELECT COUNT(*) FROM stars_pricing")
-        
-        if count[0] == 0:
-            await conn.execute("""
-                INSERT INTO stars_pricing (stars_count, price_usd) VALUES 
-                    (50, 1.00),
-                    (100, 1.50),
-                    (200, 2.50),
-                    (500, 5.00)
-            """)
-            print("✅ Default stars pricing inserted")
-        
-        print("✅ Stars pricing table created/updated")
         
         # Create user_balance table
         await conn.execute("DROP TABLE IF EXISTS user_balance")
@@ -134,6 +93,7 @@ async def update_database():
                 asset VARCHAR(10) NOT NULL,
                 status VARCHAR(20) DEFAULT 'pending',
                 crypto_pay_url TEXT,
+                payload TEXT,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                 paid_at TIMESTAMP WITH TIME ZONE,
@@ -141,17 +101,7 @@ async def update_database():
             )
         """)
         print("✅ Crypto pay invoices table created/updated")
-
-        # Add payload column to crypto_pay_invoices if it doesn't exist
-        try:
-            await conn.execute("""
-                ALTER TABLE crypto_pay_invoices 
-                ADD COLUMN IF NOT EXISTS payload TEXT
-            """)
-            print("✅ Added payload column to crypto_pay_invoices table")
-        except Exception as e:
-            print(f"⚠️ Could not add payload column: {e}")
-
+        
         print("✅ Database update completed!")
 
 

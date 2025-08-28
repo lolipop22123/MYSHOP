@@ -51,9 +51,9 @@ async def check_database():
         except Exception as e:
             print(f"❌ Error checking users table: {e}")
         
-        # Check other tables
-        tables = ['categories', 'subcategories', 'products', 'orders']
-        for table in tables:
+        # Check core tables
+        core_tables = ['users', 'chats', 'messages', 'premium_pricing', 'user_balance', 'crypto_pay_invoices']
+        for table in core_tables:
             try:
                 count = await conn.fetchval(f"SELECT COUNT(*) FROM {table}")
                 print(f"✅ {table} table exists with {count} records")
